@@ -1,0 +1,26 @@
+{
+  "name": "hangul-quest",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm-run-all --parallel dev:api dev:web",
+    "dev:api": "npm --workspace @hangul-quest/api run dev",
+    "dev:web": "npm --workspace @hangul-quest/web run dev",
+    "test": "npm --workspace @hangul-quest/api run test",
+    "test:api": "npm --workspace @hangul-quest/api run test",
+    "build": "npm-run-all build:shared build:api build:web",
+    "build:shared": "npm --workspace @hangul-quest/shared run build",
+    "build:api": "npm --workspace @hangul-quest/api run build",
+    "build:web": "npm --workspace @hangul-quest/web run build",
+    "prisma:generate": "npm --workspace @hangul-quest/api run prisma:generate",
+    "prisma:migrate": "npm --workspace @hangul-quest/api run prisma:migrate"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.7.3"
+  }
+}

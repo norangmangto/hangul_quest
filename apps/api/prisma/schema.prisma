@@ -1,0 +1,122 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         String        @id @default(cuid())
+  username   String
+  createdAt  DateTime      @default(now())
+  sessions   Session[]
+  roomPlayers RoomPlayer[]
+  attempts   QuestionAttempt[]
+  progress   PlayerProgress?
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model GameRoom {
+  id           String        @id @default(cuid())
+  code         String        @unique
+  hostUserId   String
+  status       String        @default("LOBBY")
+  maxPlayers   Int           @default(6)
+  createdAt    DateTime      @default(now())
+  players      RoomPlayer[]
+  instances    GameInstance[]
+  roomProgress RoomProgress?
+}
+
+model RoomPlayer {
+  id          String   @id @default(cuid())
+  roomId      String
+  userId      String
+  seatIndex   Int
+  isConnected Boolean  @default(true)
+  joinedAt    DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  room GameRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+}
+
+model GameInstance {
+  id             String            @id @default(cuid())
+  roomId          String
+  level           Int               @default(1)
+  stage           Int               @default(1)
+  stateJson       Json
+  activePlayerId  String?
+  turnIndex       Int               @default(0)
+  challengeId     String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  room      GameRoom          @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  attempts  QuestionAttempt[]
+}
+
+model Question {
+  id          String   @id @default(cuid())
+  type        String
+  difficulty  String
+  promptText  String
+  payloadJson Json
+  answerJson  Json
+  locale      String   @default("ko-KR")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  attempts QuestionAttempt[]
+}
+
+model QuestionAttempt {
+  id                  String   @id @default(cuid())
+  gameInstanceId      String
+  questionId          String
+  playerId            String
+  submittedAnswerJson Json
+  isCorrect           Boolean
+  latencyMs           Int
+  createdAt           DateTime @default(now())
+
+  gameInstance GameInstance @relation(fields: [gameInstanceId], references: [id], onDelete: Cascade)
+  question     Question     @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  player       User         @relation(fields: [playerId], references: [id], onDelete: Cascade)
+}
+
+model PlayerProgress {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  skillBeginner     Float    @default(0)
+  skillIntermediate Float    @default(0)
+  skillAdvanced     Float    @default(0)
+  masteryJson       Json
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model RoomProgress {
+  id            String   @id @default(cuid())
+  roomId         String   @unique
+  xpTotal        Int      @default(0)
+  levelUnlocked  Int      @default(1)
+  stars          Int      @default(0)
+  updatedAt      DateTime @updatedAt
+
+  room GameRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+}
