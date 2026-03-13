@@ -229,9 +229,18 @@ function HostGame({ state, roomId, onLeave }: { state: RoomStateDTO; roomId: str
           )}
 
           {isOver && (
-            <div className="text-center text-white">
-              <p className="text-5xl font-black mb-2">🎉 Game Over!</p>
-              <p className="text-2xl text-white/80 mb-8">Final Scores</p>
+            <div className="text-center text-white w-full max-w-sm">
+              <p className="text-5xl font-black mb-1">🎉 Game Over!</p>
+              <p className="text-xl text-white/70 mb-6">Final Rankings</p>
+              <div className="bg-white/10 rounded-3xl p-4 mb-6 space-y-2">
+                {[...state.players].filter(p => !p.isHost).sort((a, b) => b.score - a.score).map((p, i) => (
+                  <div key={p.id} className="flex items-center gap-3 px-4 py-3 bg-white/10 rounded-2xl">
+                    <span className="text-2xl">{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}</span>
+                    <span className="flex-1 font-bold text-lg truncate text-left">{p.name}</span>
+                    <span className="text-2xl font-black text-yellow-300">{p.score}</span>
+                  </div>
+                ))}
+              </div>
               <button onClick={playAgain} className="bg-yellow-400 hover:bg-yellow-300 text-gray-900 font-extrabold text-xl px-10 py-4 rounded-2xl shadow-lg transition-all">
                 🔄 Play Again
               </button>
@@ -267,7 +276,9 @@ function PlayerLobby({ state, myId, onLeave }: { state: RoomStateDTO; myId: stri
       <div className="bg-white/10 rounded-3xl p-4 w-full max-w-xs">
         <p className="font-semibold text-center mb-3">Players ({state.players.filter(p => !p.isHost).length})</p>
         {state.players.filter(p => !p.isHost).map(p => (
-          <p key={p.id} className="text-center py-1">{p.name}</p>
+          <p key={p.id} className={`text-center py-1 rounded-lg ${p.id === myId ? 'bg-white/30 font-bold px-2' : ''}`}>
+            {p.name}{p.id === myId ? ' 👤' : ''}
+          </p>
         ))}
       </div>
       <div className="flex gap-2 animate-pulse">
