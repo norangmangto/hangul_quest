@@ -124,12 +124,12 @@ function HostLobby({ state, roomId }: { state: RoomStateDTO; roomId: string }) {
         {/* Players */}
         <div className="bg-white/20 rounded-3xl p-5 text-white">
           <h2 className="font-bold text-lg mb-3">
-            👥 Players ({state.players.filter(p => p.connected).length}/{state.players.length})
+            👥 Players ({state.players.filter(p => !p.isHost && p.connected).length}/{state.players.filter(p => !p.isHost).length})
           </h2>
           <div className="flex flex-wrap gap-2">
-            {state.players.map(p => (
+            {state.players.filter(p => !p.isHost).map(p => (
               <span key={p.id} className={`px-3 py-1 rounded-full text-sm font-semibold ${p.connected ? 'bg-white/30' : 'bg-white/10 opacity-50'}`}>
-                {p.name}{p.isHost ? ' 👑' : ''}
+                {p.name}
               </span>
             ))}
           </div>
@@ -138,7 +138,7 @@ function HostLobby({ state, roomId }: { state: RoomStateDTO; roomId: string }) {
 
       <button
         onClick={start}
-        disabled={state.players.length < 1}
+        disabled={state.players.filter(p => !p.isHost).length < 1}
         className="bg-yellow-400 hover:bg-yellow-300 disabled:bg-gray-400 text-gray-900 font-extrabold text-2xl px-16 py-5 rounded-3xl shadow-xl transition-all active:scale-95"
       >
         🎮 Start Game!
@@ -227,7 +227,7 @@ function HostGame({ state, roomId }: { state: RoomStateDTO; roomId: string }) {
         {/* Right: scoreboard */}
         <div className="w-72 bg-white/10 rounded-3xl p-4 flex flex-col gap-2">
           <h2 className="text-white font-bold text-lg text-center mb-2">🏆 Scores</h2>
-          <Scoreboard players={state.players} highlightId={state.roundWinner?.id} />
+          <Scoreboard players={state.players.filter(p => !p.isHost)} highlightId={state.roundWinner?.id} />
         </div>
       </div>
     </div>
@@ -250,9 +250,9 @@ function PlayerLobby({ state, myId }: { state: RoomStateDTO; myId: string }) {
         <p className="text-4xl font-black tracking-widest">{state.roomCode}</p>
       </div>
       <div className="bg-white/10 rounded-3xl p-4 w-full max-w-xs">
-        <p className="font-semibold text-center mb-3">Players ({state.players.length})</p>
-        {state.players.map(p => (
-          <p key={p.id} className="text-center py-1">{p.name}{p.isHost ? ' 👑' : ''}</p>
+        <p className="font-semibold text-center mb-3">Players ({state.players.filter(p => !p.isHost).length})</p>
+        {state.players.filter(p => !p.isHost).map(p => (
+          <p key={p.id} className="text-center py-1">{p.name}</p>
         ))}
       </div>
       <div className="flex gap-2 animate-pulse">
@@ -302,7 +302,7 @@ function PlayerGame({ state, roomId, myId }: { state: RoomStateDTO; roomId: stri
   };
 
   if (isOver) {
-    const sorted = [...state.players].sort((a, b) => b.score - a.score);
+    const sorted = [...state.players].filter(p => !p.isHost).sort((a, b) => b.score - a.score);
     const myRank = sorted.findIndex(p => p.id === myId) + 1;
     return (
       <div className="min-h-screen bg-gradient-to-b from-indigo-600 to-purple-700 flex flex-col items-center justify-center p-6 text-white gap-4">

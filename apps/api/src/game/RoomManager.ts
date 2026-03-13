@@ -82,7 +82,8 @@ export class RoomManager {
     if (!roomId) return { ok: false, error: 'Room not found' };
     const room = this.rooms.get(roomId)!;
     if (room.status !== 'LOBBY') return { ok: false, error: 'Game already started' };
-    if (room.players.size >= 8) return { ok: false, error: 'Room is full' };
+    const playerCount = [...room.players.values()].filter(p => !p.isHost).length;
+    if (playerCount >= 8) return { ok: false, error: 'Room is full' };
 
     const trimmedName = playerName.trim().slice(0, 20);
     const nameTaken = [...room.players.values()].some(p => p.name === trimmedName);
@@ -128,7 +129,8 @@ export class RoomManager {
     if (!room) return { ok: false, error: 'Room not found' };
     if (room.hostId !== requesterId) return { ok: false, error: 'Only the host can start' };
     if (room.status !== 'LOBBY') return { ok: false, error: 'Game already started' };
-    if (room.players.size < 1) return { ok: false, error: 'Need at least 1 player' };
+    const nonHostCount = [...room.players.values()].filter(p => !p.isHost).length;
+    if (nonHostCount < 1) return { ok: false, error: 'Need at least 1 player' };
 
     room.rounds = generateRoundQuestions(room.settings.category, room.settings.totalRounds);
     room.currentRound = 0;
@@ -157,7 +159,7 @@ export class RoomManager {
     if (!room || room.status !== 'ROUND_ACTIVE') return;
 
     const player = room.players.get(playerId);
-    if (!player || player.answeredThisRound) return;
+    if (!player || player.isHost || player.answeredThisRound) return;
 
     const roundData = room.rounds[room.currentRound];
     if (!roundData || roundData.question.id !== questionId) return;
@@ -167,12 +169,12 @@ export class RoomManager {
     if (answer === roundData.correctAnswer && !room.roundWinner) {
       room.roundWinner = { id: playerId, name: player.name };
       player.score += 1;
-      this.endRound(room);
-    } else {
-      const allAnswered = [...room.players.values()].every(p => p.answeredThisRound);
-      if (allAnswered) this.endRound(room);
-      else this.broadcast(room);
     }
+
+    const connectedPlayers = [...room.players.values()].filter(p => p.connected && !p.isHost);
+    const allAnswered = connectedPlayers.every(p => p.answeredThisRound);
+    if (allAnswered) this.endRound(room);
+    else this.broadcast(room);
   }
 
   private handleRoundTimeout(roomId: string): void {
