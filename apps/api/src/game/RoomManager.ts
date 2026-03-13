@@ -2,6 +2,10 @@ import { randomBytes } from 'crypto';
 import type { GameCategory, GameSettings, PlayerState, PublicQuestion, RoomStateDTO, RoomStatus } from '@hangul-quest/shared';
 import { generateRoundQuestions } from './QuestionBank.js';
 
+interface RoomPlayer extends PlayerState {
+  answeredThisRound: boolean;
+}
+
 interface RoundData {
   question: PublicQuestion;
   correctAnswer: string;
@@ -11,7 +15,7 @@ interface Room {
   roomId: string;
   roomCode: string;
   hostId: string;
-  players: Map<string, PlayerState>;
+  players: Map<string, RoomPlayer>;
   status: RoomStatus;
   settings: GameSettings;
   currentRound: number;
@@ -45,7 +49,7 @@ export class RoomManager {
     this.onStateChange = onStateChange;
   }
 
-  createRoom(hostId: string, hostName: string, settings?: Partial<GameSettings>): Room {
+  createRoom(hostId: string, settings?: Partial<GameSettings>): Room {
     const roomId = generateId();
     let roomCode: string;
     do { roomCode = generateRoomCode(); } while (this.codeToId.has(roomCode));
@@ -57,7 +61,7 @@ export class RoomManager {
       hostId,
       players: new Map([[hostId, {
         id: hostId,
-        name: hostName,
+        name: '',
         score: 0,
         connected: true,
         isHost: true,
@@ -86,8 +90,6 @@ export class RoomManager {
     if (playerCount >= 8) return { ok: false, error: 'Room is full' };
 
     const trimmedName = playerName.trim().slice(0, 20);
-    const nameTaken = [...room.players.values()].some(p => p.name === trimmedName);
-    if (nameTaken) return { ok: false, error: 'Name already taken in this room' };
 
     room.players.set(playerId, {
       id: playerId,
@@ -120,8 +122,42 @@ export class RoomManager {
         this.closeRoom(room.roomId);
         return;
       }
+      // During an active game, promote a new host if the host disconnects
+      if (player.isHost && room.status !== 'LOBBY') {
+        const newHost = [...room.players.values()].find(p => p.connected && !p.isHost);
+        if (newHost) {
+          player.isHost = false;
+          newHost.isHost = true;
+          room.hostId = newHost.id;
+        } else {
+          this.closeRoom(room.roomId);
+          return;
+        }
+      }
       this.broadcast(room);
     }
+  }
+
+  leaveRoom(roomId: string, playerId: string): void {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+    const player = room.players.get(playerId);
+    if (!player) return;
+
+    if (player.isHost) {
+      const newHost = [...room.players.values()].find(p => p.connected && !p.isHost);
+      if (newHost) {
+        player.isHost = false;
+        newHost.isHost = true;
+        room.hostId = newHost.id;
+      } else {
+        this.closeRoom(roomId);
+        return;
+      }
+    }
+
+    room.players.delete(playerId);
+    this.broadcast(room);
   }
 
   startGame(roomId: string, requesterId: string): { ok: true } | { ok: false; error: string } {
@@ -264,7 +300,7 @@ export class RoomManager {
       roomId: room.roomId,
       roomCode: room.roomCode,
       hostId: room.hostId,
-      players: [...room.players.values()],
+      players: [...room.players.values()].map(({ answeredThisRound: _, ...p }) => p),
       status: room.status,
       settings: room.settings,
       currentRound: room.currentRound + 1,

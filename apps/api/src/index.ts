@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { Server } from 'socket.io';
@@ -25,16 +26,20 @@ const rooms = new RoomManager(broadcastState);
 // Map socket.id → { roomId, playerId } for fast lookup on disconnect
 const socketMeta = new Map<string, { roomId: string; playerId: string }>();
 
-io.on('connection', (socket) => {
-  const playerId = socket.id;
+// Map reconnect token → { roomId, playerId }
+const tokenToPlayer = new Map<string, { roomId: string; playerId: string }>();
 
-  socket.on('room:create', ({ hostName, settings }, ack) => {
-    if (!hostName?.trim()) return ack({ error: 'Name required' });
-    const room = rooms.createRoom(playerId, hostName.trim(), settings);
+io.on('connection', (socket) => {
+  let playerId = socket.id;
+
+  socket.on('room:create', ({ settings }, ack) => {
+    const room = rooms.createRoom(playerId, settings);
     socket.join(room.roomId);
-    socketMeta.set(playerId, { roomId: room.roomId, playerId });
+    socketMeta.set(socket.id, { roomId: room.roomId, playerId });
     socket.emit('room:state', rooms.toDTO(room));
-    ack({ roomId: room.roomId, roomCode: room.roomCode });
+    const token = randomBytes(16).toString('hex');
+    tokenToPlayer.set(token, { roomId: room.roomId, playerId });
+    ack({ roomId: room.roomId, roomCode: room.roomCode, reconnectToken: token });
   });
 
   socket.on('room:join', ({ roomCode, playerName }, ack) => {
@@ -42,10 +47,31 @@ io.on('connection', (socket) => {
     const result = rooms.joinRoom(roomCode.toUpperCase(), playerId, playerName.trim());
     if (!result.ok) return ack({ error: result.error });
     socket.join(result.roomId);
-    socketMeta.set(playerId, { roomId: result.roomId, playerId });
+    socketMeta.set(socket.id, { roomId: result.roomId, playerId });
     const room = rooms.getRoom(result.roomId)!;
     socket.emit('room:state', rooms.toDTO(room));
-    ack({ roomId: result.roomId });
+    const token = randomBytes(16).toString('hex');
+    tokenToPlayer.set(token, { roomId: result.roomId, playerId });
+    ack({ roomId: result.roomId, reconnectToken: token });
+  });
+
+  socket.on('room:rejoin', ({ roomId, token }, ack) => {
+    const entry = tokenToPlayer.get(token);
+    if (!entry || entry.roomId !== roomId) return ack({ error: 'Invalid token' });
+    const room = rooms.getRoom(entry.roomId);
+    if (!room) { tokenToPlayer.delete(token); return ack({ error: 'Room no longer exists' }); }
+    playerId = entry.playerId;
+    socketMeta.set(socket.id, { roomId, playerId });
+    socket.join(roomId);
+    rooms.reconnect(roomId, playerId);
+    ack({ ok: true });
+  });
+
+  socket.on('room:leave', ({ roomId }) => {
+    const meta = socketMeta.get(socket.id);
+    if (meta) socketMeta.delete(socket.id);
+    socket.leave(roomId);
+    rooms.leaveRoom(roomId, playerId);
   });
 
   socket.on('room:start', ({ roomId }, ack) => {
@@ -79,8 +105,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    const meta = socketMeta.get(playerId);
-    if (meta) socketMeta.delete(playerId);
+    const meta = socketMeta.get(socket.id);
+    if (meta) socketMeta.delete(socket.id);
     rooms.disconnect(playerId);
   });
 });

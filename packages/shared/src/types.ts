@@ -8,7 +8,6 @@ export interface PlayerState {
   score: number;
   connected: boolean;
   isHost: boolean;
-  answeredThisRound: boolean;
 }
 
 export interface GameSettings {

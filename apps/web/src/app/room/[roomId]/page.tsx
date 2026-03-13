@@ -60,7 +60,7 @@ function TimerBar({ expiresAt, timeLimit }: { expiresAt: number; timeLimit: numb
 
 // ─── Host view ────────────────────────────────────────────────────────────────
 
-function HostLobby({ state, roomId }: { state: RoomStateDTO; roomId: string }) {
+function HostLobby({ state, roomId, onLeave }: { state: RoomStateDTO; roomId: string; onLeave: () => void }) {
   const socket = getSocket();
   const [category, setCategory] = useState<GameSettings['category']>(state.settings.category);
   const [rounds, setRounds] = useState(state.settings.totalRounds);
@@ -143,11 +143,18 @@ function HostLobby({ state, roomId }: { state: RoomStateDTO; roomId: string }) {
       >
         🎮 Start Game!
       </button>
+
+      <button
+        onClick={onLeave}
+        className="text-white/70 hover:text-white text-sm font-semibold underline transition-all"
+      >
+        ✕ Close Room
+      </button>
     </div>
   );
 }
 
-function HostGame({ state, roomId }: { state: RoomStateDTO; roomId: string }) {
+function HostGame({ state, roomId, onLeave }: { state: RoomStateDTO; roomId: string; onLeave: () => void }) {
   const socket = getSocket();
 
   const nextRound = () => socket.emit('room:next-round', { roomId });
@@ -167,8 +174,16 @@ function HostGame({ state, roomId }: { state: RoomStateDTO; roomId: string }) {
         <div className="text-center">
           <span className="font-bold text-lg">{state.settings.category === 'KOREAN_WORDS' ? '📖 Korean Words' : '🔤 Hangul Letters'}</span>
         </div>
-        <div className="bg-white/20 rounded-xl px-4 py-2">
-          <span className="font-mono font-bold">{state.roomCode}</span>
+        <div className="flex items-center gap-2">
+          <div className="bg-white/20 rounded-xl px-4 py-2">
+            <span className="font-mono font-bold">{state.roomCode}</span>
+          </div>
+          <button
+            onClick={onLeave}
+            className="bg-white/20 hover:bg-white/30 text-white font-bold px-3 py-2 rounded-xl transition-all text-sm"
+          >
+            ✕ Close
+          </button>
         </div>
       </div>
 
@@ -236,7 +251,7 @@ function HostGame({ state, roomId }: { state: RoomStateDTO; roomId: string }) {
 
 // ─── Player view ──────────────────────────────────────────────────────────────
 
-function PlayerLobby({ state, myId }: { state: RoomStateDTO; myId: string }) {
+function PlayerLobby({ state, myId, onLeave }: { state: RoomStateDTO; myId: string; onLeave: () => void }) {
   const me = state.players.find(p => p.id === myId);
   return (
     <div className="min-h-screen bg-gradient-to-b from-sky-400 to-indigo-600 flex flex-col items-center justify-center p-6 gap-6 text-white">
@@ -260,11 +275,17 @@ function PlayerLobby({ state, myId }: { state: RoomStateDTO; myId: string }) {
         <div className="w-2 h-2 bg-white rounded-full delay-100" />
         <div className="w-2 h-2 bg-white rounded-full delay-200" />
       </div>
+      <button
+        onClick={onLeave}
+        className="text-white/70 hover:text-white text-sm font-semibold underline transition-all"
+      >
+        ← Leave
+      </button>
     </div>
   );
 }
 
-function PlayerGame({ state, roomId, myId }: { state: RoomStateDTO; roomId: string; myId: string }) {
+function PlayerGame({ state, roomId, myId, onLeave }: { state: RoomStateDTO; roomId: string; myId: string; onLeave: () => void }) {
   const socket = getSocket();
   const [selected, setSelected] = useState<string | null>(null);
   const [answered, setAnswered] = useState(false);
@@ -318,6 +339,12 @@ function PlayerGame({ state, roomId, myId }: { state: RoomStateDTO; roomId: stri
             </div>
           ))}
         </div>
+        <button
+          onClick={onLeave}
+          className="text-white/70 hover:text-white text-sm font-semibold underline transition-all mt-2"
+        >
+          ← Leave
+        </button>
       </div>
     );
   }
@@ -326,7 +353,15 @@ function PlayerGame({ state, roomId, myId }: { state: RoomStateDTO; roomId: stri
     <div className="min-h-screen bg-gradient-to-b from-sky-400 to-indigo-600 flex flex-col">
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-3 text-white">
-        <div className="text-sm font-bold">{me?.name ?? ''}</div>
+        <div className="flex items-center gap-2">
+          <div className="text-sm font-bold">{me?.name ?? ''}</div>
+          <button
+            onClick={onLeave}
+            className="text-white/60 hover:text-white text-xs font-semibold underline transition-all"
+          >
+            ← Leave
+          </button>
+        </div>
         <div className="text-sm font-bold">Round {state.currentRound}/{state.settings.totalRounds}</div>
         <div className="text-sm font-bold">⭐ {me?.score ?? 0} pts</div>
       </div>
@@ -401,23 +436,35 @@ export default function RoomPage() {
       setRoomState(s);
     };
 
-    const requestSync = () => socket.emit('room:sync', { roomId });
-
     socket.on('room:state', onState);
     socket.on('error:event', ({ message }) => {
       alert(message);
       router.push('/');
     });
 
-    if (socket.connected) {
-      requestSync();
+    const token = sessionStorage.getItem(`rct:${roomId}`);
+    if (token) {
+      const doRejoin = () => {
+        socket.emit('room:rejoin', { roomId, token }, (res) => {
+          if ('error' in res) {
+            sessionStorage.removeItem(`rct:${roomId}`);
+            // Room gone or token invalid — go home
+            router.push('/');
+          }
+        });
+      };
+      if (socket.connected) doRejoin();
+      else socket.once('connect', doRejoin);
     } else {
-      socket.once('connect', requestSync);
+      // Fallback for first navigation (state already in Zustand from home page)
+      const doSync = () => socket.emit('room:sync', { roomId });
+      if (socket.connected) doSync();
+      else socket.once('connect', doSync);
     }
 
     return () => {
       socket.off('room:state', onState);
-      socket.off('connect', requestSync);
+      socket.off('connect');
     };
   }, [myId, setMyId, setRoomState, router, roomId]);
 
@@ -428,6 +475,12 @@ export default function RoomPage() {
     socket.on('connect', handleConnect);
     return () => { socket.off('connect', handleConnect); };
   }, [setMyId]);
+
+  const leaveRoom = () => {
+    getSocket().emit('room:leave', { roomId });
+    sessionStorage.removeItem(`rct:${roomId}`);
+    router.push('/');
+  };
 
   if (!state) {
     return (
@@ -450,11 +503,11 @@ export default function RoomPage() {
 
   if (state.status === 'LOBBY') {
     return amHost
-      ? <HostLobby state={state} roomId={roomId} />
-      : <PlayerLobby state={state} myId={effectiveId} />;
+      ? <HostLobby state={state} roomId={roomId} onLeave={leaveRoom} />
+      : <PlayerLobby state={state} myId={effectiveId} onLeave={leaveRoom} />;
   }
 
   return amHost
-    ? <HostGame state={state} roomId={roomId} />
-    : <PlayerGame state={state} roomId={roomId} myId={effectiveId} />;
+    ? <HostGame state={state} roomId={roomId} onLeave={leaveRoom} />
+    : <PlayerGame state={state} roomId={roomId} myId={effectiveId} onLeave={leaveRoom} />;
 }
