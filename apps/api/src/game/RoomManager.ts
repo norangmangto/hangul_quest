@@ -1,464 +1,275 @@
-import { nanoid } from "nanoid";
-import type {
-  Difficulty,
-  GameMode,
-  GameStatus,
-  MiniGameType,
-  PlayerDTO,
-  PlayerPerformanceDTO,
-  QuestionDTO,
-  RoomSettingsDTO,
-  RoomStateDTO
-} from "@hangul-quest/shared";
-import { QuestionEngine } from "./QuestionEngine.js";
-import { nextEligibleTurn } from "./TurnEngine.js";
-import { getChapterForLevel, getFestivalChapter, getFestivalQuestPool, getQuestForLevel, type ChapterConfig, type QuestConfig } from "./story.js";
+import { randomBytes } from 'crypto';
+import type { GameCategory, GameSettings, PlayerState, PublicQuestion, RoomStateDTO, RoomStatus } from '@hangul-quest/shared';
+import { generateRoundQuestions } from './QuestionBank.js';
 
-export type RoomPlayer = PlayerDTO;
+interface RoundData {
+  question: PublicQuestion;
+  correctAnswer: string;
+}
 
-export type RoomState = {
+interface Room {
   roomId: string;
   roomCode: string;
-  hostUserId: string;
-  mode: GameMode;
-  settings: RoomSettingsDTO;
-  status: GameStatus;
-  players: RoomPlayer[];
-  playerPerformance: Record<string, PlayerPerformanceDTO>;
-  questId: string;
-  requiredSuccesses: number;
-  successfulMiniGames: number;
-  consecutiveFailures: number;
-  averageResponseMs: number;
-  level: number;
-  chapterId: RoomStateDTO["chapterId"];
-  chapterTitle: string;
-  questTitle: string;
-  learningGoal: string;
-  storyGoal: string;
-  progressMeter: number;
-  teamHealth: number;
-  maxTeamHealth: number;
-  turnIndex: number;
-  activePlayerId: string | null;
-  challengeId: string | null;
-  currentQuestEffect:
-    | "bridge_open"
-    | "lake_calm"
-    | "forge_ignited"
-    | "market_restored"
-    | "arena_shield_break"
-    | "archive_unsealed";
-  gameInstanceId: string;
-  currentQuestion: QuestionDTO | null;
-  failedPlayerIds: Set<string>;
-  recentOutcomes: boolean[];
-  recentResponseMs: number[];
-  lastMiniGameType: MiniGameType | null;
-  expiresAt: number | null;
-  challengeStartedAt: number | null;
+  hostId: string;
+  players: Map<string, PlayerState>;
+  status: RoomStatus;
+  settings: GameSettings;
+  currentRound: number;
+  rounds: RoundData[];
+  roundWinner: { id: string; name: string } | null;
+  roundExpiresAt: number | null;
+  roundTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const DEFAULT_SETTINGS: GameSettings = {
+  category: 'KOREAN_WORDS',
+  totalRounds: 10,
+  timeLimit: 15,
 };
 
-export type SerializedRoomState = Omit<RoomState, "failedPlayerIds"> & {
-  failedPlayerIds: string[];
-};
+function generateRoomCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  return Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
+function generateId(): string {
+  return randomBytes(8).toString('hex');
+}
 
 export class RoomManager {
-  private readonly rooms = new Map<string, RoomState>();
-  private readonly questionEngine = new QuestionEngine();
+  private rooms = new Map<string, Room>();
+  private codeToId = new Map<string, string>();
+  private onStateChange: (roomId: string, state: RoomStateDTO) => void;
 
-  constructor(private readonly turnTimeoutMs: number, private readonly maxPlayers: number) {}
+  constructor(onStateChange: (roomId: string, state: RoomStateDTO) => void) {
+    this.onStateChange = onStateChange;
+  }
 
-  createRoom(
-    hostName: string,
-    options: { mode?: GameMode; noFailureCondition?: boolean; difficultyOverride?: Difficulty | null } = {}
-  ) {
-    const roomId = nanoid();
-    const roomCode = nanoid(6).toUpperCase();
-    const hostId = nanoid();
-    const mode = options.mode ?? "STORY_CAMPAIGN";
-    const settings: RoomSettingsDTO = {
-      noFailureCondition: mode === "CLASSROOM" ? true : (options.noFailureCondition ?? false),
-      difficultyOverride: options.difficultyOverride ?? null
-    };
+  createRoom(hostId: string, hostName: string, settings?: Partial<GameSettings>): Room {
+    const roomId = generateId();
+    let roomCode: string;
+    do { roomCode = generateRoomCode(); } while (this.codeToId.has(roomCode));
 
-    const room: RoomState = {
+    const mergedSettings: GameSettings = { ...DEFAULT_SETTINGS, ...settings };
+    const room: Room = {
       roomId,
       roomCode,
-      hostUserId: hostId,
-      mode,
-      settings,
-      status: "LOBBY",
-      players: [{ userId: hostId, username: hostName, connected: true, seatIndex: 0 }],
-      playerPerformance: {
-        [hostId]: { userId: hostId, username: hostName, attempts: 0, correct: 0, timeouts: 0 }
-      },
-      questId: "forest_bridge_01",
-      requiredSuccesses: 10,
-      successfulMiniGames: 0,
-      consecutiveFailures: 0,
-      averageResponseMs: 0,
-      level: 1,
-      chapterId: "CH1_CONSONANTS",
-      chapterTitle: "Chapter 1: Forest of Consonants",
-      questTitle: "Bridge of Echoes",
-      learningGoal: "기본 자음을 인식하고 발음하기",
-      storyGoal: "흩어진 자음 정령을 회수하여 다리를 복구한다",
-      progressMeter: 0,
-      teamHealth: 3,
-      maxTeamHealth: 3,
-      turnIndex: 0,
-      activePlayerId: null,
-      challengeId: null,
-      currentQuestEffect: "bridge_open",
-      gameInstanceId: nanoid(),
-      currentQuestion: null,
-      failedPlayerIds: new Set(),
-      recentOutcomes: [],
-      recentResponseMs: [],
-      lastMiniGameType: null,
-      expiresAt: null,
-      challengeStartedAt: null
+      hostId,
+      players: new Map([[hostId, {
+        id: hostId,
+        name: hostName,
+        score: 0,
+        connected: true,
+        isHost: true,
+        answeredThisRound: false,
+      }]]),
+      status: 'LOBBY',
+      settings: mergedSettings,
+      currentRound: 0,
+      rounds: [],
+      roundWinner: null,
+      roundExpiresAt: null,
+      roundTimer: null,
     };
 
     this.rooms.set(roomId, room);
-    return { room, playerId: hostId };
-  }
-
-  joinRoom(roomCode: string, username: string) {
-    const room = [...this.rooms.values()].find((r) => r.roomCode === roomCode);
-    if (!room) throw new Error("room_not_found");
-    if (room.players.length >= this.maxPlayers) throw new Error("room_full");
-
-    const playerId = nanoid();
-    room.players.push({ userId: playerId, username, connected: true, seatIndex: room.players.length });
-    room.playerPerformance[playerId] = { userId: playerId, username, attempts: 0, correct: 0, timeouts: 0 };
-    room.status = room.players.length >= 2 ? "ROOM_READY" : "LOBBY";
-    return { room, playerId };
-  }
-
-  updateSettings(roomId: string, settingsUpdate: Partial<RoomSettingsDTO>) {
-    const room = this.getRoom(roomId);
-    room.settings = {
-      ...room.settings,
-      ...settingsUpdate,
-      noFailureCondition: room.mode === "CLASSROOM" ? true : (settingsUpdate.noFailureCondition ?? room.settings.noFailureCondition),
-      difficultyOverride:
-        settingsUpdate.difficultyOverride === undefined ? room.settings.difficultyOverride : settingsUpdate.difficultyOverride
-    };
+    this.codeToId.set(roomCode, roomId);
     return room;
   }
 
-  getRoom(roomId: string) {
+  joinRoom(roomCode: string, playerId: string, playerName: string): { ok: true; roomId: string } | { ok: false; error: string } {
+    const roomId = this.codeToId.get(roomCode);
+    if (!roomId) return { ok: false, error: 'Room not found' };
+    const room = this.rooms.get(roomId)!;
+    if (room.status !== 'LOBBY') return { ok: false, error: 'Game already started' };
+    if (room.players.size >= 8) return { ok: false, error: 'Room is full' };
+
+    const trimmedName = playerName.trim().slice(0, 20);
+    const nameTaken = [...room.players.values()].some(p => p.name === trimmedName);
+    if (nameTaken) return { ok: false, error: 'Name already taken in this room' };
+
+    room.players.set(playerId, {
+      id: playerId,
+      name: trimmedName,
+      score: 0,
+      connected: true,
+      isHost: false,
+      answeredThisRound: false,
+    });
+    this.broadcast(room);
+    return { ok: true, roomId };
+  }
+
+  reconnect(roomId: string, playerId: string): boolean {
     const room = this.rooms.get(roomId);
-    if (!room) throw new Error("room_not_found");
-    return room;
+    if (!room) return false;
+    const player = room.players.get(playerId);
+    if (!player) return false;
+    player.connected = true;
+    this.broadcast(room);
+    return true;
   }
 
-  hasRoom(roomId: string) {
-    return this.rooms.has(roomId);
-  }
-
-  closeRoom(roomId: string) {
-    return this.rooms.delete(roomId);
-  }
-
-  restoreRoom(serialized: SerializedRoomState) {
-    const room: RoomState = {
-      ...serialized,
-      failedPlayerIds: new Set(serialized.failedPlayerIds)
-    };
-    this.rooms.set(room.roomId, room);
-    return room;
-  }
-
-  startGame(roomId: string) {
-    const room = this.getRoom(roomId);
-    if (room.mode !== "CLASSROOM" && room.players.length < 2) throw new Error("not_enough_players");
-    room.status = "TURN_START";
-    room.turnIndex = 0;
-    room.activePlayerId = room.players[0]?.userId ?? null;
-    room.teamHealth = room.maxTeamHealth;
-    room.progressMeter = 0;
-    room.successfulMiniGames = 0;
-    room.consecutiveFailures = 0;
-    this.startChallenge(room);
-    return room;
-  }
-
-  submitAnswer(roomId: string, playerId: string, answer: string) {
-    const room = this.getRoom(roomId);
-    const active = room.activePlayerId;
-    if (!active || active !== playerId) throw new Error("not_your_turn");
-    if (!room.currentQuestion || !room.challengeId) throw new Error("challenge_not_ready");
-
-    const isCorrect = this.questionEngine.validateAnswer(room.currentQuestion, answer);
-    const latencyMs = room.challengeStartedAt ? Math.max(0, Date.now() - room.challengeStartedAt) : 0;
-    this.recordAttempt(room, playerId, isCorrect, false, latencyMs);
-
-    if (isCorrect) {
-      const reward = this.questionEngine.calculateReward(room.currentQuestion, true);
-      room.status = "CHALLENGE_CLEARED";
-      room.failedPlayerIds.clear();
-      room.recentOutcomes = [...room.recentOutcomes, true].slice(-12);
-      room.consecutiveFailures = 0;
-      room.successfulMiniGames += 1;
-      room.progressMeter = Math.min(100, room.progressMeter + reward.progressDelta);
-      const questCompleted = room.progressMeter >= 100 || room.successfulMiniGames >= room.requiredSuccesses;
-      return { isCorrect, room, challengeCleared: true, challengeFailed: false, questCompleted };
-    }
-
-    this.onFailedAttempt(room, playerId, answer);
-    const nextIdx = nextEligibleTurn(room);
-
-    if (nextIdx === null) {
-      if (room.settings.noFailureCondition) {
-        const connectedIdx = this.nextConnectedTurn(room);
-        if (connectedIdx !== null) {
-          room.failedPlayerIds.clear();
-          room.turnIndex = connectedIdx;
-          room.activePlayerId = room.players[connectedIdx].userId;
-          room.status = "TURN_START";
-          room.expiresAt = Date.now() + this.turnTimeoutMs;
-          room.challengeStartedAt = Date.now();
-          return { isCorrect, room, challengeCleared: false, challengeFailed: false, questCompleted: false };
-        }
+  disconnect(playerId: string): void {
+    for (const room of this.rooms.values()) {
+      const player = room.players.get(playerId);
+      if (!player) continue;
+      player.connected = false;
+      if (room.status === 'LOBBY' && player.isHost) {
+        this.closeRoom(room.roomId);
+        return;
       }
-
-      room.status = "CHALLENGE_FAILED";
-      room.teamHealth = Math.max(0, room.teamHealth - 1);
-      return { isCorrect, room, challengeCleared: false, challengeFailed: true, questCompleted: false };
+      this.broadcast(room);
     }
-
-    room.turnIndex = nextIdx;
-    room.activePlayerId = room.players[nextIdx].userId;
-    room.status = "TURN_START";
-    room.expiresAt = Date.now() + this.turnTimeoutMs;
-    room.challengeStartedAt = Date.now();
-    return { isCorrect, room, challengeCleared: false, challengeFailed: false, questCompleted: false };
   }
 
-  timeoutActiveTurn(roomId: string, playerId: string) {
-    const room = this.getRoom(roomId);
-    const active = room.activePlayerId;
-    if (!active || active !== playerId) throw new Error("not_your_turn");
-    if (!room.currentQuestion || !room.challengeId) throw new Error("challenge_not_ready");
+  startGame(roomId: string, requesterId: string): { ok: true } | { ok: false; error: string } {
+    const room = this.rooms.get(roomId);
+    if (!room) return { ok: false, error: 'Room not found' };
+    if (room.hostId !== requesterId) return { ok: false, error: 'Only the host can start' };
+    if (room.status !== 'LOBBY') return { ok: false, error: 'Game already started' };
+    if (room.players.size < 1) return { ok: false, error: 'Need at least 1 player' };
 
-    this.onFailedAttempt(room, playerId, "__TIMEOUT__", true);
-    const nextIdx = nextEligibleTurn(room);
-
-    if (nextIdx === null) {
-      if (room.settings.noFailureCondition) {
-        const connectedIdx = this.nextConnectedTurn(room);
-        if (connectedIdx !== null) {
-          room.failedPlayerIds.clear();
-          room.turnIndex = connectedIdx;
-          room.activePlayerId = room.players[connectedIdx].userId;
-          room.status = "TURN_START";
-          room.expiresAt = Date.now() + this.turnTimeoutMs;
-          room.challengeStartedAt = Date.now();
-          return { isCorrect: false, room, challengeCleared: false, challengeFailed: false, reason: "timeout" as const };
-        }
-      }
-
-      room.status = "CHALLENGE_FAILED";
-      room.teamHealth = Math.max(0, room.teamHealth - 1);
-      return { isCorrect: false, room, challengeCleared: false, challengeFailed: true, reason: "timeout" as const };
-    }
-
-    room.turnIndex = nextIdx;
-    room.activePlayerId = room.players[nextIdx].userId;
-    room.status = "TURN_START";
-    room.expiresAt = Date.now() + this.turnTimeoutMs;
-    room.challengeStartedAt = Date.now();
-    return { isCorrect: false, room, challengeCleared: false, challengeFailed: false, reason: "timeout" as const };
+    room.rounds = generateRoundQuestions(room.settings.category, room.settings.totalRounds);
+    room.currentRound = 0;
+    this.startRound(room);
+    return { ok: true };
   }
 
-  nextChallenge(roomId: string) {
-    const room = this.getRoom(roomId);
-
-    if (room.progressMeter >= 100 || room.successfulMiniGames >= room.requiredSuccesses) {
-      room.level += 1;
-      room.progressMeter = 0;
-      room.successfulMiniGames = 0;
-      room.consecutiveFailures = 0;
-      room.failedPlayerIds.clear();
-      room.lastMiniGameType = null;
+  private startRound(room: Room): void {
+    const roundIndex = room.currentRound;
+    if (roundIndex >= room.rounds.length) {
+      this.endGame(room);
+      return;
     }
 
-    const idx = (room.turnIndex + 1) % room.players.length;
-    room.turnIndex = idx;
-    room.activePlayerId = room.players[idx].userId;
-    this.startChallenge(room);
-    return room;
+    for (const p of room.players.values()) p.answeredThisRound = false;
+    room.roundWinner = null;
+    room.status = 'ROUND_ACTIVE';
+    room.roundExpiresAt = Date.now() + room.settings.timeLimit * 1000;
+
+    room.roundTimer = setTimeout(() => this.handleRoundTimeout(room.roomId), room.settings.timeLimit * 1000);
+    this.broadcast(room);
   }
 
-  retryChallenge(roomId: string) {
-    const room = this.getRoom(roomId);
-    room.failedPlayerIds.clear();
-    if (room.teamHealth <= 0) {
-      room.teamHealth = room.maxTeamHealth;
-      room.progressMeter = Math.max(0, room.progressMeter - 20);
-      room.successfulMiniGames = Math.max(0, Math.floor(room.progressMeter / 10));
+  submitAnswer(roomId: string, playerId: string, questionId: string, answer: string): void {
+    const room = this.rooms.get(roomId);
+    if (!room || room.status !== 'ROUND_ACTIVE') return;
+
+    const player = room.players.get(playerId);
+    if (!player || player.answeredThisRound) return;
+
+    const roundData = room.rounds[room.currentRound];
+    if (!roundData || roundData.question.id !== questionId) return;
+
+    player.answeredThisRound = true;
+
+    if (answer === roundData.correctAnswer && !room.roundWinner) {
+      room.roundWinner = { id: playerId, name: player.name };
+      player.score += 1;
+      this.endRound(room);
+    } else {
+      const allAnswered = [...room.players.values()].every(p => p.answeredThisRound);
+      if (allAnswered) this.endRound(room);
+      else this.broadcast(room);
     }
-    room.turnIndex = (room.turnIndex + 1) % room.players.length;
-    room.activePlayerId = room.players[room.turnIndex].userId;
-    room.status = "TURN_START";
-    room.expiresAt = Date.now() + this.turnTimeoutMs;
-    room.challengeStartedAt = Date.now();
-    return room;
   }
 
-  toDTO(room: RoomState): RoomStateDTO {
-    const currentQuestion = room.currentQuestion ? this.sanitizeQuestion(room.currentQuestion) : null;
+  private handleRoundTimeout(roomId: string): void {
+    const room = this.rooms.get(roomId);
+    if (!room || room.status !== 'ROUND_ACTIVE') return;
+    this.endRound(room);
+  }
 
+  private endRound(room: Room): void {
+    if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+    room.status = 'ROUND_RESULT';
+    room.roundExpiresAt = null;
+    this.broadcast(room);
+  }
+
+  advanceRound(roomId: string, requesterId: string): { ok: true } | { ok: false; error: string } {
+    const room = this.rooms.get(roomId);
+    if (!room) return { ok: false, error: 'Room not found' };
+    if (room.hostId !== requesterId) return { ok: false, error: 'Only the host can advance' };
+    if (room.status !== 'ROUND_RESULT') return { ok: false, error: 'Not in result phase' };
+
+    room.currentRound += 1;
+    if (room.currentRound >= room.rounds.length) {
+      this.endGame(room);
+    } else {
+      this.startRound(room);
+    }
+    return { ok: true };
+  }
+
+  private endGame(room: Room): void {
+    room.status = 'GAME_OVER';
+    room.roundExpiresAt = null;
+    this.broadcast(room);
+  }
+
+  playAgain(roomId: string, requesterId: string): { ok: true } | { ok: false; error: string } {
+    const room = this.rooms.get(roomId);
+    if (!room) return { ok: false, error: 'Room not found' };
+    if (room.hostId !== requesterId) return { ok: false, error: 'Only the host can restart' };
+    if (room.status !== 'GAME_OVER') return { ok: false, error: 'Game not over yet' };
+
+    for (const p of room.players.values()) {
+      p.score = 0;
+      p.answeredThisRound = false;
+    }
+    room.currentRound = 0;
+    room.rounds = [];
+    room.roundWinner = null;
+    room.status = 'LOBBY';
+    this.broadcast(room);
+    return { ok: true };
+  }
+
+  updateSettings(roomId: string, requesterId: string, settings: Partial<GameSettings>): void {
+    const room = this.rooms.get(roomId);
+    if (!room || room.hostId !== requesterId || room.status !== 'LOBBY') return;
+    room.settings = { ...room.settings, ...settings };
+    this.broadcast(room);
+  }
+
+  getRoom(roomId: string): Room | undefined {
+    return this.rooms.get(roomId);
+  }
+
+  getRoomByCode(roomCode: string): Room | undefined {
+    const id = this.codeToId.get(roomCode);
+    return id ? this.rooms.get(id) : undefined;
+  }
+
+  private closeRoom(roomId: string): void {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+    if (room.roundTimer) clearTimeout(room.roundTimer);
+    this.codeToId.delete(room.roomCode);
+    this.rooms.delete(roomId);
+  }
+
+  private broadcast(room: Room): void {
+    this.onStateChange(room.roomId, this.toDTO(room));
+  }
+
+  toDTO(room: Room): RoomStateDTO {
+    const roundData = room.rounds[room.currentRound];
+    const revealAnswer = room.status === 'ROUND_RESULT' || room.status === 'GAME_OVER';
     return {
       roomId: room.roomId,
       roomCode: room.roomCode,
-      hostUserId: room.hostUserId,
-      mode: room.mode,
-      settings: room.settings,
+      hostId: room.hostId,
+      players: [...room.players.values()],
       status: room.status,
-      players: room.players,
-      playerPerformance: Object.values(room.playerPerformance),
-      questId: room.questId,
-      requiredSuccesses: room.requiredSuccesses,
-      successfulMiniGames: room.successfulMiniGames,
-      consecutiveFailures: room.consecutiveFailures,
-      averageResponseMs: room.averageResponseMs,
-      level: room.level,
-      chapterId: room.chapterId,
-      chapterTitle: room.chapterTitle,
-      questTitle: room.questTitle,
-      learningGoal: room.learningGoal,
-      storyGoal: room.storyGoal,
-      progressMeter: room.progressMeter,
-      teamHealth: room.teamHealth,
-      maxTeamHealth: room.maxTeamHealth,
-      turnIndex: room.turnIndex,
-      activePlayerId: room.activePlayerId,
-      challengeId: room.challengeId,
-      currentQuestion,
-      failedPlayerIds: [...room.failedPlayerIds],
-      expiresAt: room.expiresAt
+      settings: room.settings,
+      currentRound: room.currentRound + 1,
+      currentQuestion: roundData?.question,
+      roundWinner: room.roundWinner,
+      correctAnswer: revealAnswer ? roundData?.correctAnswer : undefined,
+      roundExpiresAt: room.roundExpiresAt ?? undefined,
     };
-  }
-
-  serialize(room: RoomState): SerializedRoomState {
-    return {
-      ...room,
-      failedPlayerIds: [...room.failedPlayerIds]
-    };
-  }
-
-  private startChallenge(room: RoomState) {
-    const chapter = room.mode === "VILLAGE_FESTIVAL" ? getFestivalChapter() : getChapterForLevel(room.level);
-    const quest = this.resolveQuest(room, chapter);
-
-    room.chapterId = chapter.id;
-    room.chapterTitle = chapter.title;
-    room.questTitle = quest.title;
-    room.questId = quest.questId;
-    room.requiredSuccesses = quest.requiredSuccesses;
-    room.learningGoal = chapter.learningGoal;
-    room.storyGoal = chapter.storyGoal;
-    room.currentQuestEffect = chapter.questEffect;
-
-    const difficulty = this.getDifficulty(room);
-    const miniGameType = this.pickMiniGameType(quest, room.lastMiniGameType);
-    room.currentQuestion = this.questionEngine.generate(miniGameType, difficulty, chapter, quest.title);
-    room.lastMiniGameType = miniGameType;
-    room.challengeId = nanoid();
-    room.failedPlayerIds.clear();
-    room.challengeStartedAt = Date.now();
-    room.expiresAt = Date.now() + this.turnTimeoutMs;
-    room.status = "TURN_START";
-  }
-
-  private resolveQuest(room: RoomState, chapter: ChapterConfig): QuestConfig {
-    if (room.mode === "VILLAGE_FESTIVAL") {
-      return getFestivalQuestPool();
-    }
-    return getQuestForLevel(chapter, room.level);
-  }
-
-  private pickMiniGameType(quest: QuestConfig, lastType: MiniGameType | null): MiniGameType {
-    const available = quest.miniGamePool.filter((type) => type !== lastType);
-    const pool = available.length > 0 ? available : quest.miniGamePool;
-    return pool[Math.floor(Math.random() * pool.length)];
-  }
-
-  private getDifficulty(room: RoomState): Difficulty {
-    if (room.settings.difficultyOverride) {
-      return room.settings.difficultyOverride;
-    }
-
-    const baseline: Difficulty = room.level < 3 ? "BEGINNER" : room.level < 7 ? "INTERMEDIATE" : "ADVANCED";
-    if (room.recentOutcomes.length < 3) return baseline;
-
-    const accuracy = room.recentOutcomes.filter(Boolean).length / room.recentOutcomes.length;
-    const fastAnswers = room.averageResponseMs > 0 && room.averageResponseMs <= 6000;
-
-    if (accuracy <= 0.5 || room.consecutiveFailures >= 2) {
-      return "BEGINNER";
-    }
-
-    if (accuracy >= 0.85 && fastAnswers) {
-      return baseline === "BEGINNER" ? "INTERMEDIATE" : "ADVANCED";
-    }
-
-    return baseline;
-  }
-
-  private onFailedAttempt(room: RoomState, playerId: string, answer: string, timedOut = false) {
-    room.failedPlayerIds.add(playerId);
-    room.recentOutcomes = [...room.recentOutcomes, false].slice(-12);
-    room.consecutiveFailures += 1;
-    this.recordAttempt(room, playerId, false, timedOut, this.turnTimeoutMs);
-
-    const question = room.currentQuestion;
-    if (question && question.miniGameType === "MARKET_RESTORATION" && "options" in question) {
-      question.options = (question.options ?? []).filter((option) => option !== answer);
-    }
-  }
-
-  private recordAttempt(room: RoomState, playerId: string, isCorrect: boolean, timedOut: boolean, latencyMs: number) {
-    if (!room.playerPerformance[playerId]) {
-      const player = room.players.find((item) => item.userId === playerId);
-      room.playerPerformance[playerId] = {
-        userId: playerId,
-        username: player?.username ?? "Unknown",
-        attempts: 0,
-        correct: 0,
-        timeouts: 0
-      };
-    }
-
-    room.playerPerformance[playerId].attempts += 1;
-    if (isCorrect) room.playerPerformance[playerId].correct += 1;
-    if (timedOut) room.playerPerformance[playerId].timeouts += 1;
-
-    room.recentResponseMs = [...room.recentResponseMs, Math.max(0, latencyMs)].slice(-12);
-    room.averageResponseMs =
-      room.recentResponseMs.length > 0
-        ? Math.floor(room.recentResponseMs.reduce((sum, value) => sum + value, 0) / room.recentResponseMs.length)
-        : 0;
-  }
-
-  private nextConnectedTurn(room: RoomState): number | null {
-    const n = room.players.length;
-    for (let step = 1; step <= n; step += 1) {
-      const idx = (room.turnIndex + step) % n;
-      if (room.players[idx].connected) {
-        return idx;
-      }
-    }
-    return null;
-  }
-
-  private sanitizeQuestion(question: QuestionDTO): Omit<QuestionDTO, "expected"> {
-    const { expected, ...safeQuestion } = question;
-    void expected;
-    return safeQuestion;
   }
 }

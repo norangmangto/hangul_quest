@@ -1,20 +1,22 @@
-import { create } from "zustand";
-import type { RoomStateDTO } from "@hangul-quest/shared";
+import { create } from 'zustand';
+import type { RoomStateDTO } from '@hangul-quest/shared';
 
 type GameStore = {
-  username: string;
-  roomCode: string;
+  myName: string;
+  myId: string;
   roomState: RoomStateDTO | null;
-  setUsername: (username: string) => void;
-  setRoomCode: (roomCode: string) => void;
+  setMyName: (name: string) => void;
+  setMyId: (id: string) => void;
   setRoomState: (state: RoomStateDTO) => void;
+  reset: () => void;
 };
 
 export const useGameStore = create<GameStore>((set) => ({
-  username: "",
-  roomCode: "",
+  myName: '',
+  myId: '',
   roomState: null,
-  setUsername: (username) => set({ username }),
-  setRoomCode: (roomCode) => set({ roomCode }),
-  setRoomState: (roomState) => set({ roomState })
+  setMyName: (myName) => set({ myName }),
+  setMyId: (myId) => set({ myId }),
+  setRoomState: (roomState) => set({ roomState }),
+  reset: () => set({ myName: '', myId: '', roomState: null }),
 }));

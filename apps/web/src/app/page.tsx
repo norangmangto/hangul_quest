@@ -1,211 +1,215 @@
-"use client";
+'use client';
 
-import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
-import type { Difficulty, GameMode } from "@hangul-quest/shared";
-import { getSocket, syncSocketAuthToken } from "../lib/socket";
-import { useGameStore } from "../lib/store";
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { getSocket } from '../lib/socket';
+import { useGameStore } from '../lib/store';
 
 export default function HomePage() {
   const router = useRouter();
-  const setUsername = useGameStore((s) => s.setUsername);
-  const setRoomCode = useGameStore((s) => s.setRoomCode);
+  const { setMyName, setMyId, setRoomState } = useGameStore();
 
-  const [username, setName] = useState("");
-  const [roomCode, setCode] = useState("");
-  const [mode, setMode] = useState<GameMode>("STORY_CAMPAIGN");
-  const [noFailureCondition, setNoFailureCondition] = useState(false);
-  const [difficultyOverride, setDifficultyOverride] = useState<Difficulty | "AUTO">("AUTO");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState<"create" | "join" | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
-  const toastTimeoutRef = useRef<number | null>(null);
+  const [tab, setTab] = useState<'create' | 'join'>('create');
+  const [name, setName] = useState('');
+  const [roomCode, setRoomCode] = useState('');
+  const [category, setCategory] = useState<'KOREAN_WORDS' | 'HANGUL_LETTERS'>('KOREAN_WORDS');
+  const [rounds, setRounds] = useState(10);
+  const [timeLimit, setTimeLimit] = useState(15);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const showToast = (message: string) => {
-    setToast(message);
-    if (toastTimeoutRef.current) {
-      window.clearTimeout(toastTimeoutRef.current);
-    }
-    toastTimeoutRef.current = window.setTimeout(() => {
-      setToast(null);
-      toastTimeoutRef.current = null;
-    }, 3000);
-  };
-
-  useEffect(() => {
-    const pendingToast = sessionStorage.getItem("hq.toast");
-    if (pendingToast) {
-      sessionStorage.removeItem("hq.toast");
-      showToast(pendingToast);
-    }
-  }, []);
-
-  const attachSocketGuards = (socket: ReturnType<typeof getSocket>) => {
-    const onErrorEvent = (payload: { code: string; message: string }) => {
-      const message = payload.message || "요청을 처리하지 못했습니다.";
-      console.error("Socket error:event", payload);
-      setError(message);
-      showToast(message);
-      setSubmitting(null);
-    };
-    const onConnectError = () => {
-      const message = "서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.";
-      console.error("Socket connect_error");
-      setError(message);
-      showToast(message);
-      setSubmitting(null);
-    };
-
-    socket.once("error:event", onErrorEvent);
-    socket.once("connect_error", onConnectError);
-
-    return () => {
-      socket.off("error:event", onErrorEvent);
-      socket.off("connect_error", onConnectError);
-    };
-  };
+  const trimmedName = name.trim();
 
   const createRoom = () => {
-    if (!username.trim()) {
-      setError("이름을 입력해주세요.");
-      return;
-    }
-
-    setError(null);
-    setSubmitting("create");
+    if (!trimmedName) { setError('Please enter your name'); return; }
+    setError('');
+    setLoading(true);
     const socket = getSocket();
     socket.connect();
-    const detachGuards = attachSocketGuards(socket);
-    const fallbackTimeout = window.setTimeout(() => {
-      setError("서버 응답이 없습니다. 잠시 후 다시 시도해주세요.");
-      setSubmitting(null);
-      detachGuards();
-    }, 6000);
-    socket.emit(
-      "room:create",
-      {
-        username,
-        mode,
-        noFailureCondition: mode === "CLASSROOM" ? true : noFailureCondition,
-        difficultyOverride: difficultyOverride === "AUTO" ? null : difficultyOverride
-      },
-      (res) => {
-        window.clearTimeout(fallbackTimeout);
-        detachGuards();
-        setSubmitting(null);
-        localStorage.setItem("token", res.token);
-        syncSocketAuthToken(res.token);
-        setUsername(username);
-        setRoomCode(res.roomCode);
-        router.push(`/game/${res.roomId}`);
-      }
-    );
+    socket.once('connect', () => {
+      setMyId(socket.id!);
+      setMyName(trimmedName);
+      socket.once('room:state', setRoomState);
+      socket.emit('room:create', {
+        hostName: trimmedName,
+        settings: { category, totalRounds: rounds, timeLimit },
+      }, (res) => {
+        setLoading(false);
+        if ('error' in res) {
+          socket.off('room:state', setRoomState);
+          setError(res.error);
+          return;
+        }
+        router.push(`/room/${res.roomId}`);
+      });
+    });
+    socket.once('connect_error', () => {
+      setLoading(false);
+      setError('Cannot connect to server. Is it running?');
+    });
   };
 
   const joinRoom = () => {
-    if (!username.trim()) {
-      setError("이름을 입력해주세요.");
-      return;
-    }
-    if (!roomCode.trim()) {
-      setError("방 코드를 입력해주세요.");
-      return;
-    }
-
-    setError(null);
-    setSubmitting("join");
+    if (!trimmedName) { setError('Please enter your name'); return; }
+    if (!roomCode.trim()) { setError('Please enter a room code'); return; }
+    setError('');
+    setLoading(true);
     const socket = getSocket();
     socket.connect();
-    const detachGuards = attachSocketGuards(socket);
-    const fallbackTimeout = window.setTimeout(() => {
-      setError("서버 응답이 없습니다. 잠시 후 다시 시도해주세요.");
-      setSubmitting(null);
-      detachGuards();
-    }, 6000);
-    socket.emit("room:join", { username, roomCode }, (res) => {
-      window.clearTimeout(fallbackTimeout);
-      detachGuards();
-      setSubmitting(null);
-      localStorage.setItem("token", res.token);
-      syncSocketAuthToken(res.token);
-      setUsername(username);
-      setRoomCode(roomCode);
-      router.push(`/game/${res.roomId}`);
+    socket.once('connect', () => {
+      setMyId(socket.id!);
+      setMyName(trimmedName);
+      socket.once('room:state', setRoomState);
+      socket.emit('room:join', {
+        playerName: trimmedName,
+        roomCode: roomCode.trim().toUpperCase(),
+      }, (res) => {
+        setLoading(false);
+        if ('error' in res) {
+          socket.off('room:state', setRoomState);
+          setError(res.error);
+          return;
+        }
+        router.push(`/room/${res.roomId}`);
+      });
+    });
+    socket.once('connect_error', () => {
+      setLoading(false);
+      setError('Cannot connect to server. Is it running?');
     });
   };
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center gap-4 p-6">
-      <h1 className="text-5xl font-extrabold">한글 퀘스트</h1>
-      <p className="text-xl">친구들과 함께 미션을 해결하며 한글을 배워요</p>
-      {toast && (
-        <div className="fixed left-1/2 top-6 z-50 -translate-x-1/2 rounded-full bg-slate-900 px-4 py-2 text-sm text-white shadow-lg">
-          {toast}
+    <main className="min-h-screen bg-gradient-to-b from-sky-400 to-indigo-600 flex items-center justify-center p-4">
+      <div className="w-full max-w-md">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <div className="text-8xl mb-3">🎮</div>
+          <h1 className="text-5xl font-extrabold text-white drop-shadow-lg">한글 퀘스트</h1>
+          <p className="text-sky-100 text-lg mt-2">Learn Korean while playing!</p>
         </div>
-      )}
-      {error && <p className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
 
-      <input
-        placeholder="이름"
-        value={username}
-        onChange={(e) => setName(e.target.value)}
-        className="rounded-xl border border-sky-300 p-3 text-xl"
-      />
+        {/* Card */}
+        <div className="bg-white rounded-3xl shadow-2xl p-6">
+          {/* Tab */}
+          <div className="flex rounded-2xl bg-gray-100 p-1 mb-6">
+            <button
+              onClick={() => setTab('create')}
+              className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${tab === 'create' ? 'bg-white shadow text-indigo-600' : 'text-gray-500'}`}
+            >
+              🏠 Create Room
+            </button>
+            <button
+              onClick={() => setTab('join')}
+              className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${tab === 'join' ? 'bg-white shadow text-indigo-600' : 'text-gray-500'}`}
+            >
+              🚀 Join Room
+            </button>
+          </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <select
-          value={mode}
-          onChange={(e) => setMode(e.target.value as GameMode)}
-          className="rounded-xl border border-sky-300 p-3 text-base"
-        >
-          <option value="STORY_CAMPAIGN">Story Campaign</option>
-          <option value="VILLAGE_FESTIVAL">Village Festival</option>
-          <option value="CLASSROOM">Classroom Mode</option>
-        </select>
-        <select
-          value={difficultyOverride}
-          onChange={(e) => setDifficultyOverride(e.target.value as Difficulty | "AUTO")}
-          className="rounded-xl border border-sky-300 p-3 text-base"
-        >
-          <option value="AUTO">난이도 자동</option>
-          <option value="BEGINNER">BEGINNER</option>
-          <option value="INTERMEDIATE">INTERMEDIATE</option>
-          <option value="ADVANCED">ADVANCED</option>
-        </select>
-        <label className="flex items-center gap-2 rounded-xl border border-sky-300 p-3 text-sm">
-          <input
-            type="checkbox"
-            checked={mode === "CLASSROOM" ? true : noFailureCondition}
-            onChange={(e) => setNoFailureCondition(e.target.checked)}
-            disabled={mode === "CLASSROOM"}
-          />
-          실패 조건 없음
-        </label>
+          {/* Name input (shared) */}
+          <div className="mb-4">
+            <label className="block text-sm font-semibold text-gray-600 mb-1">Your Name</label>
+            <input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Enter your name..."
+              maxLength={20}
+              className="w-full border-2 border-gray-200 rounded-2xl px-4 py-3 text-lg font-semibold focus:outline-none focus:border-indigo-400"
+            />
+          </div>
+
+          {tab === 'create' && (
+            <>
+              {/* Category */}
+              <div className="mb-4">
+                <label className="block text-sm font-semibold text-gray-600 mb-2">Category</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => setCategory('KOREAN_WORDS')}
+                    className={`p-3 rounded-2xl border-2 font-semibold text-sm transition-all ${category === 'KOREAN_WORDS' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-gray-200 text-gray-600'}`}
+                  >
+                    <div className="text-2xl mb-1">📖</div>
+                    Korean Words
+                  </button>
+                  <button
+                    onClick={() => setCategory('HANGUL_LETTERS')}
+                    className={`p-3 rounded-2xl border-2 font-semibold text-sm transition-all ${category === 'HANGUL_LETTERS' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-gray-200 text-gray-600'}`}
+                  >
+                    <div className="text-2xl mb-1">🔤</div>
+                    Hangul Letters
+                  </button>
+                </div>
+              </div>
+
+              {/* Rounds */}
+              <div className="mb-4">
+                <label className="block text-sm font-semibold text-gray-600 mb-2">
+                  Rounds: <span className="text-indigo-600">{rounds}</span>
+                </label>
+                <input
+                  type="range" min={5} max={30} step={5}
+                  value={rounds}
+                  onChange={e => setRounds(Number(e.target.value))}
+                  className="w-full accent-indigo-500"
+                />
+                <div className="flex justify-between text-xs text-gray-400 mt-1">
+                  <span>5</span><span>10</span><span>15</span><span>20</span><span>25</span><span>30</span>
+                </div>
+              </div>
+
+              {/* Time limit */}
+              <div className="mb-6">
+                <label className="block text-sm font-semibold text-gray-600 mb-2">
+                  Time per round: <span className="text-indigo-600">{timeLimit}s</span>
+                </label>
+                <input
+                  type="range" min={10} max={30} step={5}
+                  value={timeLimit}
+                  onChange={e => setTimeLimit(Number(e.target.value))}
+                  className="w-full accent-indigo-500"
+                />
+                <div className="flex justify-between text-xs text-gray-400 mt-1">
+                  <span>10s</span><span>15s</span><span>20s</span><span>25s</span><span>30s</span>
+                </div>
+              </div>
+
+              {error && <p className="text-red-500 text-sm mb-3 text-center">{error}</p>}
+              <button
+                onClick={createRoom}
+                disabled={loading}
+                className="w-full bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-300 text-white font-extrabold text-xl py-4 rounded-2xl transition-all shadow-lg active:scale-95"
+              >
+                {loading ? '⏳ Connecting...' : '🏠 Create Room'}
+              </button>
+            </>
+          )}
+
+          {tab === 'join' && (
+            <>
+              <div className="mb-6">
+                <label className="block text-sm font-semibold text-gray-600 mb-1">Room Code</label>
+                <input
+                  value={roomCode}
+                  onChange={e => setRoomCode(e.target.value.toUpperCase())}
+                  placeholder="e.g. ABCD"
+                  maxLength={4}
+                  className="w-full border-2 border-gray-200 rounded-2xl px-4 py-3 text-3xl font-extrabold tracking-widest text-center focus:outline-none focus:border-indigo-400 uppercase"
+                />
+              </div>
+
+              {error && <p className="text-red-500 text-sm mb-3 text-center">{error}</p>}
+              <button
+                onClick={joinRoom}
+                disabled={loading}
+                className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-300 text-white font-extrabold text-xl py-4 rounded-2xl transition-all shadow-lg active:scale-95"
+              >
+                {loading ? '⏳ Connecting...' : '🚀 Join Room'}
+              </button>
+            </>
+          )}
+        </div>
       </div>
-
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <button
-          onClick={createRoom}
-          disabled={submitting !== null}
-          className="rounded-xl bg-blue-500 p-3 text-xl font-bold text-white disabled:bg-slate-300"
-        >
-          방 만들기
-        </button>
-        <input
-          placeholder="방 코드"
-          value={roomCode}
-          onChange={(e) => setCode(e.target.value.toUpperCase())}
-          className="rounded-xl border border-sky-300 p-3 text-xl"
-        />
-      </div>
-
-      <button
-        onClick={joinRoom}
-        disabled={submitting !== null}
-        className="rounded-xl bg-emerald-500 p-3 text-xl font-bold text-white disabled:bg-slate-300"
-      >
-        방 참가하기
-      </button>
     </main>
   );
 }
