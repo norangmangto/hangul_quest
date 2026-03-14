@@ -13,3 +13,20 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji;
   background: #f0f9ff;
 }
+
+@keyframes floatUp {
+  0%   { transform: translateY(0)   scale(1);   opacity: 1; }
+  60%  { transform: translateY(-80px) scale(1.2); opacity: 1; }
+  100% { transform: translateY(-160px) scale(0.8); opacity: 0; }
+}
+
+@keyframes pingOnce {
+  0%   { transform: scale(1.4); opacity: 0; }
+  20%  { opacity: 1; }
+  80%  { transform: scale(1); opacity: 1; }
+  100% { transform: scale(0.8); opacity: 0; }
+}
+
+.dark body {
+  background: #111827;
+}

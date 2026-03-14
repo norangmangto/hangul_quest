@@ -12,6 +12,7 @@
     "dev:web": "npm --workspace @hangul-quest/web run dev",
     "test": "npm --workspace @hangul-quest/api run test",
     "test:api": "npm --workspace @hangul-quest/api run test",
+    "test:e2e": "npm --workspace @hangul-quest/e2e run test",
     "build": "npm-run-all build:shared build:api build:web",
     "build:shared": "npm --workspace @hangul-quest/shared run build",
     "build:api": "npm --workspace @hangul-quest/api run build",

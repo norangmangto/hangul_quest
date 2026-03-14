@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import rateLimit from '@fastify/rate-limit';
 import { Server } from 'socket.io';
 import type { ClientToServerEvents, ServerToClientEvents, RoomStateDTO } from '@hangul-quest/shared';
 import { env } from './config.js';
@@ -9,6 +10,7 @@ import { RoomManager } from './game/RoomManager.js';
 const app = Fastify({ logger: true });
 
 await app.register(cors, { origin: env.CORS_ORIGIN });
+await app.register(rateLimit, { max: 100, timeWindow: '1 minute' });
 
 app.get('/health', async () => ({ ok: true }));
 
@@ -29,13 +31,31 @@ const socketMeta = new Map<string, { roomId: string; playerId: string }>();
 // Map reconnect token → { roomId, playerId }
 const tokenToPlayer = new Map<string, { roomId: string; playerId: string }>();
 
+// Map playerId → socketId for targeting specific players (e.g. kick)
+const playerToSocket = new Map<string, string>();
+
+// Allowed reaction emojis
+const ALLOWED_REACTIONS = new Set(['👍', '🎉', '😱', '❤️', '😂', '🔥']);
+
 io.on('connection', (socket) => {
   let playerId = socket.id;
 
-  socket.on('room:create', ({ settings }, ack) => {
-    const room = rooms.createRoom(playerId, settings);
+  // Per-socket event rate limit: max 30 events/5s
+  let eventCount = 0;
+  const resetInterval = setInterval(() => { eventCount = 0; }, 5000);
+  socket.use((_packet, next) => {
+    eventCount++;
+    if (eventCount > 30) return; // silently drop
+    next();
+  });
+  socket.on('disconnect', () => clearInterval(resetInterval));
+
+  socket.on('room:create', ({ settings, hostName }, ack) => {
+    const trimmedName = hostName?.trim() || 'Host';
+    const room = rooms.createRoom(playerId, trimmedName, settings);
     socket.join(room.roomId);
     socketMeta.set(socket.id, { roomId: room.roomId, playerId });
+    playerToSocket.set(playerId, socket.id);
     socket.emit('room:state', rooms.toDTO(room));
     const token = randomBytes(16).toString('hex');
     tokenToPlayer.set(token, { roomId: room.roomId, playerId });
@@ -48,6 +68,7 @@ io.on('connection', (socket) => {
     if (!result.ok) return ack({ error: result.error });
     socket.join(result.roomId);
     socketMeta.set(socket.id, { roomId: result.roomId, playerId });
+    playerToSocket.set(playerId, socket.id);
     const room = rooms.getRoom(result.roomId)!;
     socket.emit('room:state', rooms.toDTO(room));
     const token = randomBytes(16).toString('hex');
@@ -62,6 +83,7 @@ io.on('connection', (socket) => {
     if (!room) { tokenToPlayer.delete(token); return ack({ error: 'Room no longer exists' }); }
     playerId = entry.playerId;
     socketMeta.set(socket.id, { roomId, playerId });
+    playerToSocket.set(playerId, socket.id);
     socket.join(roomId);
     rooms.reconnect(roomId, playerId);
     ack({ ok: true });
@@ -70,6 +92,7 @@ io.on('connection', (socket) => {
   socket.on('room:leave', ({ roomId }) => {
     const meta = socketMeta.get(socket.id);
     if (meta) socketMeta.delete(socket.id);
+    playerToSocket.delete(playerId);
     socket.leave(roomId);
     rooms.leaveRoom(roomId, playerId);
   });
@@ -95,6 +118,37 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('room:kick', ({ roomId, targetId }) => {
+    const result = rooms.kickPlayer(roomId, playerId, targetId);
+    if (result.ok) {
+      // Notify the kicked player
+      const kickedSocketId = playerToSocket.get(targetId);
+      if (kickedSocketId) {
+        io.to(kickedSocketId).emit('error:event', { message: 'You were kicked from the room' });
+        playerToSocket.delete(targetId);
+      }
+    }
+  });
+
+  socket.on('room:assign-team', ({ roomId, targetId, team }) => {
+    rooms.assignTeam(roomId, playerId, targetId, team);
+  });
+
+  socket.on('reaction:send', ({ roomId, emoji }) => {
+    if (!ALLOWED_REACTIONS.has(emoji)) return;
+    const meta = socketMeta.get(socket.id);
+    if (!meta || meta.roomId !== roomId) return;
+    const room = rooms.getRoom(roomId);
+    if (!room) return;
+    const player = room.players.get(playerId);
+    if (!player) return;
+    io.to(roomId).emit('reaction:broadcast', {
+      playerId,
+      playerName: player.name,
+      emoji,
+    });
+  });
+
   socket.on('room:sync', ({ roomId }) => {
     const room = rooms.getRoom(roomId);
     if (room) socket.emit('room:state', rooms.toDTO(room));
@@ -107,6 +161,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const meta = socketMeta.get(socket.id);
     if (meta) socketMeta.delete(socket.id);
+    playerToSocket.delete(playerId);
     rooms.disconnect(playerId);
   });
 });
