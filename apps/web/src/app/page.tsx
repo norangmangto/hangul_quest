@@ -5,220 +5,195 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { getSocket } from '../lib/socket';
 import { useGameStore } from '../lib/store';
 import { getWeakSpots } from '../lib/weakSpots';
+import { useLangStore, useT, type Lang } from '../lib/i18n';
+
+type Screen = 'menu' | 'multi' | 'join-code';
+
+function Sun() {
+  return (
+    <div className="pointer-events-none select-none absolute top-5 right-6 z-0">
+      <div className="w-24 h-24 rounded-full sun-glow"
+           style={{ background: 'radial-gradient(circle, #fffde7 0%, #ffd600 55%, #ffb300 100%)' }} />
+    </div>
+  );
+}
+
+function Cloud({ className, style }: { className?: string; style?: React.CSSProperties }) {
+  return (
+    <div className={`pointer-events-none select-none absolute z-0 ${className}`} style={style}>
+      <div className="relative">
+        <div className="w-36 h-14 bg-white/85 rounded-full" />
+        <div className="absolute -top-8 left-7 w-24 bg-white/85 rounded-full" style={{ height: '4.5rem' }} />
+        <div className="absolute -top-5 right-4 bg-white/85 rounded-full" style={{ width: '4.5rem', height: '3.5rem' }} />
+      </div>
+    </div>
+  );
+}
+
+function LangPill() {
+  const { lang, setLang, hydrate } = useLangStore();
+  useEffect(() => { hydrate(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const LANGS: { code: Lang; label: string }[] = [
+    { code: 'en', label: 'EN' },
+    { code: 'ko', label: '한' },
+    { code: 'de', label: 'DE' },
+  ];
+  return (
+    <div className="sky-card rounded-full px-2 py-1.5 flex gap-1">
+      {LANGS.map(({ code, label }) => (
+        <button key={code} onClick={() => setLang(code)}
+          className={`px-3 py-1.5 rounded-full text-sm font-black transition-all ${lang === code ? 'bg-yellow-400 text-slate-900' : 'text-white/70 hover:text-white'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function HomeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { setMyName, setMyId, setRoomState } = useGameStore();
+  const t = useT();
 
   const prefilledCode = searchParams.get('code') ?? '';
-  const [tab, setTab] = useState<'create' | 'join'>(prefilledCode ? 'join' : 'create');
-  const [name, setName] = useState('');
-  const [roomCode, setRoomCode] = useState(prefilledCode.toUpperCase());
+  const [screen, setScreen] = useState<Screen>('menu');
+  const [roomCode, setRoomCode] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
-  const weakSpots = getWeakSpots();
+  const [weakCount, setWeakCount] = useState(0);
 
-  // Sync dark mode with html class
+  useEffect(() => { setWeakCount(getWeakSpots().length); }, []);
+
+  // Invite link with ?code= → go straight to join page
   useEffect(() => {
-    const stored = localStorage.getItem('hq:darkMode');
-    if (stored === '1') {
-      setDarkMode(true);
-      document.documentElement.classList.add('dark');
-    }
-  }, []);
-
-  const toggleDark = () => {
-    const next = !darkMode;
-    setDarkMode(next);
-    if (next) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('hq:darkMode', '1');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.removeItem('hq:darkMode');
-    }
-  };
+    if (prefilledCode) router.replace(`/room/join/${prefilledCode.toUpperCase()}`);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const createRoom = () => {
-    const trimmedName = name.trim();
-    if (!trimmedName) { setError('Please enter your name'); return; }
-    setError('');
-    setLoading(true);
+    setError(''); setLoading(true);
     const socket = getSocket();
-
-    const doCreate = () => {
+    const go = () => {
       setMyId(socket.id!);
-      setMyName(trimmedName);
+      setMyName('Host');
       socket.once('room:state', setRoomState);
-      socket.emit('room:create', { hostName: trimmedName }, (res) => {
+      socket.emit('room:create', { hostName: 'Host' }, (res) => {
         setLoading(false);
-        if ('error' in res) {
-          socket.off('room:state', setRoomState);
-          setError(res.error);
-          return;
-        }
+        if ('error' in res) { socket.off('room:state', setRoomState); setError(res.error); return; }
         localStorage.setItem(`rct:${res.roomId}`, res.reconnectToken);
         router.push(`/room/${res.roomId}`);
       });
     };
-
-    if (socket.connected) {
-      doCreate();
-    } else {
-      socket.connect();
-      socket.once('connect', doCreate);
-      socket.once('connect_error', () => {
-        setLoading(false);
-        setError('Cannot connect to server. Is it running?');
-      });
-    }
+    socket.connected ? go() : (socket.connect(), socket.once('connect', go), socket.once('connect_error', () => { setLoading(false); setError(t.err_connect); }));
   };
 
-  const joinRoom = () => {
-    const trimmedName = name.trim();
-    if (!trimmedName) { setError('Please enter your name'); return; }
-    if (!roomCode.trim()) { setError('Please enter a room code'); return; }
-    setError('');
-    setLoading(true);
-    const socket = getSocket();
+  const goJoin = () => {
+    const code = roomCode.trim().toUpperCase();
+    if (!code) { setError(t.err_code_required); return; }
+    router.push(`/room/join/${code}`);
+  };
 
-    const doJoin = () => {
-      setMyId(socket.id!);
-      setMyName(trimmedName);
-      socket.once('room:state', setRoomState);
-      socket.emit('room:join', {
-        playerName: trimmedName,
-        roomCode: roomCode.trim().toUpperCase(),
-      }, (res) => {
-        setLoading(false);
-        if ('error' in res) {
-          socket.off('room:state', setRoomState);
-          setError(res.error);
-          return;
-        }
-        localStorage.setItem(`rct:${res.roomId}`, res.reconnectToken);
-        router.push(`/room/${res.roomId}`);
-      });
-    };
-
-    if (socket.connected) {
-      doJoin();
-    } else {
-      socket.connect();
-      socket.once('connect', doJoin);
-      socket.once('connect_error', () => {
-        setLoading(false);
-        setError('Cannot connect to server. Is it running?');
-      });
-    }
+  const back = () => {
+    if (screen === 'join-code') { setScreen('multi'); setRoomCode(''); setError(''); }
+    else { setScreen('menu'); setError(''); }
   };
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-sky-400 to-indigo-600 dark:from-gray-800 dark:to-gray-900 flex items-center justify-center p-4 transition-colors duration-300">
+    <main className="min-h-screen bg-gradient-to-b from-cyan-300 via-sky-400 to-blue-600 flex flex-col relative overflow-hidden">
+      <Sun />
+      <Cloud className="top-10 left-2 cloud-a" />
+      <Cloud className="top-28 right-14 cloud-b" style={{ transform: 'scale(0.65)', opacity: 0.75 }} />
 
-      {/* Dark mode toggle */}
-      <button
-        onClick={toggleDark}
-        className="fixed top-4 right-4 bg-white/20 hover:bg-white/30 dark:bg-gray-700 dark:hover:bg-gray-600 text-white rounded-full w-10 h-10 flex items-center justify-center text-xl transition-all shadow"
-        title="Toggle dark mode"
-      >
-        {darkMode ? '☀️' : '🌙'}
-      </button>
-
-      {/* Practice mode link */}
-      <button
-        onClick={() => router.push('/practice')}
-        className="fixed top-4 left-4 bg-white/20 hover:bg-white/30 dark:bg-gray-700 dark:hover:bg-gray-600 text-white rounded-full px-3 py-2 text-sm font-semibold transition-all shadow"
-      >
-        📖 Practice
-      </button>
-
-      <div className="w-full max-w-md">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <div className="text-8xl mb-3">🎮</div>
-          <h1 className="text-5xl font-extrabold text-white drop-shadow-lg">한글 퀘스트</h1>
-          <p className="text-sky-100 dark:text-gray-300 text-lg mt-2">Learn Korean while playing!</p>
-        </div>
-
-        {/* Weak spots banner */}
-        {weakSpots.length > 0 && (
-          <button
-            onClick={() => router.push('/practice')}
-            className="w-full mb-4 bg-orange-400/80 hover:bg-orange-400 text-white rounded-2xl px-4 py-3 text-sm font-bold text-left transition-all"
-          >
-            🔴 You have {weakSpots.length} weak spot{weakSpots.length !== 1 ? 's' : ''} — practice to improve! →
-          </button>
+      {/* Top bar */}
+      <div className="relative z-10 flex items-center justify-between px-4 pt-4 pb-2">
+        {screen !== 'menu' ? (
+          <button onClick={back} className="sky-card rounded-full px-5 py-3 text-white font-black text-xl gummy-btn">←</button>
+        ) : (
+          <div className="w-16" />
         )}
-
-        {/* Card */}
-        <div className="bg-white dark:bg-gray-800 rounded-3xl shadow-2xl p-6">
-          {/* Tab */}
-          <div className="flex rounded-2xl bg-gray-100 dark:bg-gray-700 p-1 mb-6">
-            <button
-              onClick={() => { setTab('create'); setError(''); }}
-              className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${tab === 'create' ? 'bg-white dark:bg-gray-600 shadow text-indigo-600 dark:text-indigo-300' : 'text-gray-500 dark:text-gray-400'}`}
-            >
-              🏠 Create Room
-            </button>
-            <button
-              onClick={() => { setTab('join'); setError(''); }}
-              className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${tab === 'join' ? 'bg-white dark:bg-gray-600 shadow text-indigo-600 dark:text-indigo-300' : 'text-gray-500 dark:text-gray-400'}`}
-            >
-              🚀 Join Room
-            </button>
-          </div>
-
-          {/* Name field */}
-          <div className="mb-4">
-            <label className="block text-sm font-semibold text-gray-600 dark:text-gray-300 mb-1">Your Name</label>
-            <input
-              value={name}
-              onChange={e => setName(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') tab === 'create' ? createRoom() : joinRoom(); }}
-              placeholder="Enter your name..."
-              maxLength={20}
-              className="w-full border-2 border-gray-200 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-2xl px-4 py-3 text-lg font-semibold focus:outline-none focus:border-indigo-400"
-            />
-          </div>
-
-          {tab === 'join' && (
-            <div className="mb-6">
-              <label className="block text-sm font-semibold text-gray-600 dark:text-gray-300 mb-1">Room Code</label>
-              <input
-                value={roomCode}
-                onChange={e => setRoomCode(e.target.value.toUpperCase())}
-                onKeyDown={e => { if (e.key === 'Enter') joinRoom(); }}
-                placeholder="e.g. ABCD"
-                maxLength={4}
-                className="w-full border-2 border-gray-200 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-2xl px-4 py-3 text-3xl font-extrabold tracking-widest text-center focus:outline-none focus:border-indigo-400 uppercase"
-              />
-            </div>
-          )}
-
-          {error && <p className="text-red-500 text-sm mb-3 text-center">{error}</p>}
-
-          {tab === 'create' ? (
-            <button
-              onClick={createRoom}
-              disabled={loading}
-              className="w-full bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-300 text-white font-extrabold text-xl py-4 rounded-2xl transition-all shadow-lg active:scale-95"
-            >
-              {loading ? '⏳ Connecting...' : '🏠 Create Room'}
-            </button>
-          ) : (
-            <button
-              onClick={joinRoom}
-              disabled={loading}
-              className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-300 text-white font-extrabold text-xl py-4 rounded-2xl transition-all shadow-lg active:scale-95"
-            >
-              {loading ? '⏳ Connecting...' : '🚀 Join Room'}
-            </button>
-          )}
-        </div>
+        <LangPill />
       </div>
+
+      {/* Logo */}
+      <div className="relative z-10 text-center pt-2 pb-4">
+        <div className="text-[5.5rem] leading-none bird-bob inline-block select-none">🐦</div>
+        <h1 className="text-6xl font-black text-white kid-title leading-tight">한글 퀘스트</h1>
+      </div>
+
+      {/* ── MENU: Solo / Multi ── */}
+      {screen === 'menu' && (
+        <div className="relative z-10 flex gap-4 flex-1 px-4 pb-8">
+          <button onClick={() => router.push('/practice')}
+            className="relative flex-1 bg-gradient-to-b from-rose-400 to-red-600 rounded-[2.5rem] flex flex-col items-center justify-center gap-4 gummy-btn">
+            {weakCount > 0 && (
+              <div className="absolute top-4 right-4 w-10 h-10 rounded-full bg-yellow-400 flex items-center justify-center text-slate-900 font-black text-base"
+                   style={{ boxShadow: '0 3px 0 rgba(0,0,0,0.3)' }}>{weakCount}</div>
+            )}
+            <span className="text-[6.5rem] leading-none drop-shadow-xl select-none" style={{ animation: 'birdBob 2.2s ease-in-out infinite' }}>🐦</span>
+            <span className="text-3xl font-black text-white kid-label">{t.single_play}</span>
+          </button>
+
+          <button onClick={() => setScreen('multi')}
+            className="flex-1 bg-gradient-to-b from-amber-300 to-yellow-500 rounded-[2.5rem] flex flex-col items-center justify-center gap-4 gummy-btn">
+            <span className="text-[6.5rem] leading-none drop-shadow-xl select-none" style={{ animation: 'birdBob 2.2s ease-in-out infinite', animationDelay: '0.6s' }}>🐣</span>
+            <span className="text-3xl font-black text-yellow-900 kid-label">{t.multi_play}</span>
+          </button>
+        </div>
+      )}
+
+      {/* ── MULTI: Create / Join two big cards ── */}
+      {screen === 'multi' && (
+        <div className="relative z-10 flex gap-4 flex-1 px-4 pb-8">
+
+          {/* Create Room */}
+          <button onClick={createRoom} disabled={loading}
+            className="flex-1 bg-gradient-to-b from-emerald-400 to-green-600 rounded-[2.5rem] flex flex-col items-center justify-center gap-4 gummy-btn">
+            <span className="text-[6.5rem] leading-none drop-shadow-xl select-none" style={{ animation: 'birdBob 2.2s ease-in-out infinite' }}>🏠</span>
+            <span className="text-3xl font-black text-white kid-label text-center px-2">
+              {loading ? '⏳' : t.create_room_tab}
+            </span>
+          </button>
+
+          {/* Join Room */}
+          <button onClick={() => setScreen('join-code')}
+            className="flex-1 bg-gradient-to-b from-sky-400 to-blue-600 rounded-[2.5rem] flex flex-col items-center justify-center gap-4 gummy-btn">
+            <span className="text-[6.5rem] leading-none drop-shadow-xl select-none" style={{ animation: 'birdBob 2.2s ease-in-out infinite', animationDelay: '0.6s' }}>🚀</span>
+            <span className="text-3xl font-black text-white kid-label text-center px-2">{t.join_room_tab}</span>
+          </button>
+        </div>
+      )}
+
+      {/* ── JOIN-CODE: enter room code ── */}
+      {screen === 'join-code' && (
+        <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 pb-8 gap-5">
+          <div className="bubble-card p-6 w-full max-w-sm flex flex-col gap-4">
+            <p className="text-gray-500 text-lg font-black text-center">🔑 {t.room_code}</p>
+            <input
+              value={roomCode}
+              onChange={e => setRoomCode(e.target.value.toUpperCase())}
+              onKeyDown={e => { if (e.key === 'Enter') goJoin(); }}
+              placeholder="ABCD"
+              maxLength={4}
+              autoFocus
+              className="w-full bg-amber-50 border-4 border-amber-200 rounded-2xl px-4 py-5 text-5xl font-black text-amber-900 tracking-[0.45em] text-center focus:outline-none uppercase placeholder-amber-200 focus:border-amber-400"
+            />
+
+            {error && (
+              <div className="bg-red-50 text-red-600 text-lg font-black text-center py-3 rounded-2xl"
+                   style={{ border: '3px solid #fca5a5' }}>⚠️ {error}</div>
+            )}
+
+            <button onClick={goJoin}
+              className="w-full bg-gradient-to-b from-sky-400 to-blue-600 text-white font-black text-2xl py-6 rounded-2xl gummy-btn">
+              🚀 Enter Room →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Ground */}
+      <div className="relative z-10 h-12 bg-gradient-to-b from-lime-400 to-green-600 w-full"
+           style={{ boxShadow: 'inset 0 4px 0 rgba(255,255,255,0.25)' }} />
     </main>
   );
 }

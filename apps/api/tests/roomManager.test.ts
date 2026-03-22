@@ -183,4 +183,123 @@ describe('RoomManager', () => {
     const dto = mgr.toDTO(room);
     expect(dto.maxPlayers).toBe(8);
   });
+
+  // ── renamePlayer ─────────────────────────────────────────────────────────
+
+  it('renamePlayer succeeds in lobby', () => {
+    const { mgr } = makeManager();
+    const room = mgr.createRoom('host1', 'Host');
+    mgr.joinRoom(room.roomCode, 'p1', 'Alice');
+    const result = mgr.renamePlayer(room.roomId, 'p1', 'Alicia');
+    expect(result.ok).toBe(true);
+    const player = mgr.toDTO(room).players.find(p => p.id === 'p1');
+    expect(player?.name).toBe('Alicia');
+  });
+
+  it('renamePlayer rejects during active game', () => {
+    const { mgr } = makeManager();
+    const room = mgr.createRoom('host1', 'Host');
+    mgr.joinRoom(room.roomCode, 'p1', 'Alice');
+    mgr.startGame(room.roomId, 'host1');
+    const result = mgr.renamePlayer(room.roomId, 'p1', 'Alicia');
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toMatch(/cannot rename/i);
+  });
+
+  it('renamePlayer trims whitespace and enforces 20-char cap', () => {
+    const { mgr } = makeManager();
+    const room = mgr.createRoom('host1', 'Host');
+    mgr.joinRoom(room.roomCode, 'p1', 'Alice');
+    mgr.renamePlayer(room.roomId, 'p1', '  Bob  ');
+    expect(mgr.toDTO(room).players.find(p => p.id === 'p1')?.name).toBe('Bob');
+
+    const longName = 'A'.repeat(30);
+    mgr.renamePlayer(room.roomId, 'p1', longName);
+    expect(mgr.toDTO(room).players.find(p => p.id === 'p1')?.name).toHaveLength(20);
+  });
+
+  it('renamePlayer rejects empty name after trim', () => {
+    const { mgr } = makeManager();
+    const room = mgr.createRoom('host1', 'Host');
+    mgr.joinRoom(room.roomCode, 'p1', 'Alice');
+    const result = mgr.renamePlayer(room.roomId, 'p1', '   ');
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toMatch(/name/i);
+  });
+
+  // ── updateSettings validation ─────────────────────────────────────────────
+
+  it('updateSettings clamps totalRounds between 1 and 30', () => {
+    const { mgr } = makeManager();
+    const room = mgr.createRoom('host1', 'Host');
+
+    mgr.updateSettings(room.roomId, 'host1', { totalRounds: 0 });
+    expect(mgr.toDTO(room).settings.totalRounds).toBe(1);
+
+    mgr.updateSettings(room.roomId, 'host1', { totalRounds: 99 });
+    expect(mgr.toDTO(room).settings.totalRounds).toBe(30);
+
+    mgr.updateSettings(room.roomId, 'host1', { totalRounds: 10 });
+    expect(mgr.toDTO(room).settings.totalRounds).toBe(10);
+  });
+
+  it('updateSettings clamps timeLimit between 5 and 60', () => {
+    const { mgr } = makeManager();
+    const room = mgr.createRoom('host1', 'Host');
+
+    mgr.updateSettings(room.roomId, 'host1', { timeLimit: 1 });
+    expect(mgr.toDTO(room).settings.timeLimit).toBe(5);
+
+    mgr.updateSettings(room.roomId, 'host1', { timeLimit: 120 });
+    expect(mgr.toDTO(room).settings.timeLimit).toBe(60);
+
+    mgr.updateSettings(room.roomId, 'host1', { timeLimit: 20 });
+    expect(mgr.toDTO(room).settings.timeLimit).toBe(20);
+  });
+
+  it('updateSettings clamps autoAdvanceDelay between 0 and 30', () => {
+    const { mgr } = makeManager();
+    const room = mgr.createRoom('host1', 'Host');
+
+    mgr.updateSettings(room.roomId, 'host1', { autoAdvanceDelay: -5 });
+    expect(mgr.toDTO(room).settings.autoAdvanceDelay).toBe(0);
+
+    mgr.updateSettings(room.roomId, 'host1', { autoAdvanceDelay: 999 });
+    expect(mgr.toDTO(room).settings.autoAdvanceDelay).toBe(30);
+  });
+
+  it('updateSettings rejects unknown category', () => {
+    const { mgr } = makeManager();
+    const room = mgr.createRoom('host1', 'Host');
+    const before = mgr.toDTO(room).settings.category;
+    mgr.updateSettings(room.roomId, 'host1', { category: 'INVALID_CAT' as never });
+    expect(mgr.toDTO(room).settings.category).toBe(before);
+  });
+
+  it('updateSettings rejects unknown gameMode', () => {
+    const { mgr } = makeManager();
+    const room = mgr.createRoom('host1', 'Host');
+    const before = mgr.toDTO(room).settings.gameMode;
+    mgr.updateSettings(room.roomId, 'host1', { gameMode: 'battle-royale' as never });
+    expect(mgr.toDTO(room).settings.gameMode).toBe(before);
+  });
+
+  it('updateSettings is ignored when requester is not the host', () => {
+    const { mgr } = makeManager();
+    const room = mgr.createRoom('host1', 'Host');
+    mgr.joinRoom(room.roomCode, 'p1', 'Alice');
+    const before = mgr.toDTO(room).settings.totalRounds;
+    mgr.updateSettings(room.roomId, 'p1', { totalRounds: 5 });
+    expect(mgr.toDTO(room).settings.totalRounds).toBe(before);
+  });
+
+  it('updateSettings is ignored when game is already started', () => {
+    const { mgr } = makeManager();
+    const room = mgr.createRoom('host1', 'Host');
+    mgr.joinRoom(room.roomCode, 'p1', 'Alice');
+    mgr.startGame(room.roomId, 'host1');
+    const before = mgr.toDTO(room).settings.timeLimit;
+    mgr.updateSettings(room.roomId, 'host1', { timeLimit: 60 });
+    expect(mgr.toDTO(room).settings.timeLimit).toBe(before);
+  });
 });

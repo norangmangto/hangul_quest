@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "dev": "npm-run-all --parallel dev:api dev:web",
+    "clean": "rm -rf apps/web/.next apps/api/dist",
     "dev:api": "npm --workspace @hangul-quest/api run dev",
     "dev:web": "npm --workspace @hangul-quest/web run dev",
     "test": "npm --workspace @hangul-quest/api run test",

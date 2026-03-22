@@ -11,7 +11,7 @@ export type ClientToServerEvents = {
   ) => void;
   'room:rejoin': (
     payload: { roomId: string; token: string },
-    ack: (res: { ok: true } | { error: string }) => void
+    ack: (res: { ok: true; reconnectToken: string } | { error: string }) => void
   ) => void;
   'room:leave': (payload: { roomId: string }) => void;
   'room:start': (
@@ -26,6 +26,10 @@ export type ClientToServerEvents = {
   'room:kick': (payload: { roomId: string; targetId: string }) => void;
   'reaction:send': (payload: { roomId: string; emoji: string }) => void;
   'room:assign-team': (payload: { roomId: string; targetId: string; team: 'red' | 'blue' }) => void;
+  'player:rename': (
+    payload: { roomId: string; newName: string },
+    ack: (res: { ok: true } | { error: string }) => void
+  ) => void;
 };
 
 export type ServerToClientEvents = {

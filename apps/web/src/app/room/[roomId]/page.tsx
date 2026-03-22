@@ -5,71 +5,91 @@ import { useParams, useRouter } from 'next/navigation';
 import type { RoomStateDTO, GameSettings } from '@hangul-quest/shared';
 import { getSocket } from '../../../lib/socket';
 import { useGameStore } from '../../../lib/store';
+import { useRoomSetup } from '../../../lib/useRoomSetup';
 import { toast } from 'sonner';
-import { playCorrect, playWrong, playRoundEnd, playGameOver, playTimerTick } from '../../../lib/sounds';
+import { playCorrect, playRoundEnd, playGameOver, playTimerTick } from '../../../lib/sounds';
 import { recordWrong } from '../../../lib/weakSpots';
+import { useT, useLangStore, type Lang } from '../../../lib/i18n';
 
-// ─── Reaction types ───────────────────────────────────────────────────────────
-
-interface FloatingReaction {
-  id: number;
-  emoji: string;
-  playerName: string;
-  x: number;
+function LangPill() {
+  const { lang, setLang } = useLangStore();
+  const LANGS: { code: Lang; label: string }[] = [
+    { code: 'en', label: 'EN' },
+    { code: 'ko', label: '한' },
+    { code: 'de', label: 'DE' },
+  ];
+  return (
+    <div className="sky-card rounded-full px-2 py-1.5 flex gap-1">
+      {LANGS.map(({ code, label }) => (
+        <button key={code} onClick={() => setLang(code)}
+          className={`px-3 py-1.5 rounded-full text-sm font-black transition-all ${lang === code ? 'bg-yellow-400 text-slate-900' : 'text-white/70 hover:text-white'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+interface FloatingReaction { id: number; emoji: string; playerName: string; x: number; }
 
-function categoryLabel(cat: GameSettings['category']): string {
-  switch (cat) {
-    case 'KOREAN_WORDS': return '📖 Korean Words';
-    case 'HANGUL_LETTERS': return '🔤 Hangul Letters';
-    case 'KOREAN_VERBS': return '🏃 Korean Verbs';
-    case 'KOREAN_TO_ENGLISH': return '🌐 Korean → English';
-    case 'KOREAN_NUMBERS': return '🔢 Korean Numbers';
-    case 'KOREAN_SENTENCES': return '💬 Korean Sentences';
-  }
-}
-
-function speakKorean(text: string): void {
+function speakKorean(text: string) {
   if (typeof window === 'undefined' || !window.speechSynthesis) return;
   window.speechSynthesis.cancel();
-  const utt = new SpeechSynthesisUtterance(text);
-  utt.lang = 'ko-KR';
-  utt.rate = 0.85;
-  window.speechSynthesis.speak(utt);
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ko-KR'; u.rate = 0.85;
+  window.speechSynthesis.speak(u);
 }
 
-// ─── Shared sub-components ───────────────────────────────────────────────────
-
-function Scoreboard({ players, highlightId, showTeams }: {
-  players: RoomStateDTO['players'];
-  highlightId?: string;
-  showTeams?: boolean;
-}) {
-  const sorted = [...players].sort((a, b) => b.score - a.score);
+// Sky wrapper used by every sub-view
+function Sky({ children, ground = true }: { children: React.ReactNode; ground?: boolean }) {
   return (
-    <div className="w-full space-y-2">
-      {sorted.map((p, i) => (
-        <div
-          key={p.id}
-          className={`flex items-center gap-3 px-4 py-3 rounded-2xl transition-all ${
-            p.id === highlightId ? 'bg-yellow-100 ring-2 ring-yellow-400' : 'bg-white/60 dark:bg-gray-700/60'
-          } ${!p.connected ? 'opacity-50' : ''} ${p.eliminated ? 'opacity-40' : ''}`}
-        >
-          <span className="text-2xl font-black text-gray-400 w-8">{i + 1}</span>
-          {showTeams && p.team && (
-            <span className={`w-3 h-3 rounded-full ${p.team === 'red' ? 'bg-red-500' : 'bg-blue-500'}`} />
-          )}
-          <span className={`flex-1 font-bold text-lg truncate ${p.eliminated ? 'line-through text-gray-400' : ''}`}>
-            {p.name}{p.isHost ? ' 👑' : ''}
-          </span>
-          {p.streak >= 2 && !p.eliminated && (
-            <span className="text-sm font-black text-orange-500">🔥{p.streak}</span>
-          )}
-          {p.eliminated && <span className="text-xs text-red-400 font-bold">OUT</span>}
-          <span className="text-2xl font-black text-indigo-600 dark:text-indigo-300">{p.score}</span>
+    <div className="min-h-screen bg-gradient-to-b from-cyan-300 via-sky-400 to-blue-600 flex flex-col relative overflow-hidden">
+      {/* Sun */}
+      <div className="pointer-events-none select-none absolute top-5 right-6 z-0">
+        <div className="w-20 h-20 rounded-full sun-glow"
+             style={{ background: 'radial-gradient(circle, #fffde7 0%, #ffd600 55%, #ffb300 100%)' }} />
+      </div>
+      {/* Cloud */}
+      <div className="pointer-events-none absolute top-12 left-2 cloud-a opacity-70 z-0">
+        <div className="relative">
+          <div className="w-32 h-12 bg-white/80 rounded-full" />
+          <div className="absolute -top-6 left-6 w-20 h-16 bg-white/80 rounded-full" />
         </div>
+      </div>
+      {children}
+      {ground && (
+        <div className="h-12 bg-gradient-to-b from-lime-400 to-green-600 w-full mt-auto"
+             style={{ boxShadow: 'inset 0 4px 0 rgba(255,255,255,0.25)' }} />
+      )}
+    </div>
+  );
+}
+
+// Big vibrant answer button colors
+const ANSWER_COLORS = [
+  { idle: 'bg-gradient-to-b from-rose-400 to-red-600',     correct: 'bg-gradient-to-b from-emerald-400 to-green-600 ring-4 ring-white/50', wrong: 'bg-gradient-to-b from-gray-500 to-gray-700', dim: 'bg-gradient-to-b from-gray-400 to-gray-500 opacity-40' },
+  { idle: 'bg-gradient-to-b from-amber-300 to-yellow-500', correct: 'bg-gradient-to-b from-emerald-400 to-green-600 ring-4 ring-white/50', wrong: 'bg-gradient-to-b from-gray-500 to-gray-700', dim: 'bg-gradient-to-b from-gray-400 to-gray-500 opacity-40' },
+  { idle: 'bg-gradient-to-b from-sky-400 to-blue-600',     correct: 'bg-gradient-to-b from-emerald-400 to-green-600 ring-4 ring-white/50', wrong: 'bg-gradient-to-b from-gray-500 to-gray-700', dim: 'bg-gradient-to-b from-gray-400 to-gray-500 opacity-40' },
+  { idle: 'bg-gradient-to-b from-violet-400 to-purple-600', correct: 'bg-gradient-to-b from-emerald-400 to-green-600 ring-4 ring-white/50', wrong: 'bg-gradient-to-b from-gray-500 to-gray-700', dim: 'bg-gradient-to-b from-gray-400 to-gray-500 opacity-40' },
+];
+
+function answerClass(idx: number, opt: string, sel: string | null, correct: string | null | undefined, isResult: boolean, answered: boolean) {
+  const c = ANSWER_COLORS[idx % 4];
+  if (!isResult) {
+    if (opt === sel) return `${c.idle} ring-4 ring-white/60 scale-95`;
+    if (answered) return c.dim;
+    return c.idle;
+  }
+  if (opt === correct) return c.correct;
+  if (opt === sel) return c.wrong;
+  return c.dim;
+}
+
+function Stars({ pct }: { pct: number }) {
+  return (
+    <div className="flex gap-3 justify-center">
+      {[33, 66, 85].map((t, i) => (
+        <span key={i} className={`text-5xl ${pct > t ? 'drop-shadow-lg' : 'opacity-20 grayscale'}`}>⭐</span>
       ))}
     </div>
   );
@@ -78,985 +98,788 @@ function Scoreboard({ players, highlightId, showTeams }: {
 function TimerBar({ expiresAt, timeLimit }: { expiresAt: number; timeLimit: number }) {
   const [pct, setPct] = useState(100);
   const [secs, setSecs] = useState(timeLimit);
-  const rafRef = useRef<number | null>(null);
-
+  const raf = useRef<number | null>(null);
   useEffect(() => {
     const tick = () => {
-      const remaining = Math.max(0, expiresAt - Date.now());
-      const fraction = remaining / (timeLimit * 1000);
-      setPct(fraction * 100);
-      setSecs(Math.ceil(remaining / 1000));
-      if (remaining > 0) rafRef.current = requestAnimationFrame(tick);
+      const rem = Math.max(0, expiresAt - Date.now());
+      setPct((rem / (timeLimit * 1000)) * 100);
+      setSecs(Math.ceil(rem / 1000));
+      if (rem > 0) raf.current = requestAnimationFrame(tick);
     };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+    raf.current = requestAnimationFrame(tick);
+    return () => { if (raf.current) cancelAnimationFrame(raf.current); };
   }, [expiresAt, timeLimit]);
-
-  const color = pct > 50 ? 'bg-emerald-500' : pct > 25 ? 'bg-yellow-500' : 'bg-red-500';
+  const color = pct > 50 ? 'from-emerald-400 to-green-600' : pct > 25 ? 'from-amber-300 to-yellow-500' : 'from-rose-400 to-red-600';
   return (
-    <div className="w-full">
-      <div className="h-4 bg-gray-200 rounded-full overflow-hidden">
-        <div className={`h-full ${color} transition-all duration-100 rounded-full`} style={{ width: `${pct}%` }} />
+    <div className="px-4 py-2">
+      <div className="h-5 bg-black/20 rounded-full overflow-hidden">
+        <div className={`h-full bg-gradient-to-r ${color} transition-all duration-100 rounded-full`} style={{ width: `${pct}%` }} />
       </div>
-      <p className={`text-center text-sm font-bold mt-1 ${pct < 25 ? 'text-red-500 animate-pulse' : 'text-gray-500'}`}>
-        {secs}s
-      </p>
+      <p className={`text-center text-lg font-black kid-label mt-0.5 ${pct < 25 ? 'text-red-200 animate-pulse' : 'text-white'}`}>{secs}s</p>
     </div>
   );
 }
 
-function AutoAdvanceCountdown({ autoAdvanceAt }: { autoAdvanceAt: number }) {
-  const [secs, setSecs] = useState(Math.ceil((autoAdvanceAt - Date.now()) / 1000));
-  const rafRef = useRef<number | null>(null);
-
+function AutoAdv({ autoAdvanceAt, label }: { autoAdvanceAt: number; label: (n: number) => string }) {
+  const [s, setS] = useState(Math.ceil((autoAdvanceAt - Date.now()) / 1000));
+  const raf = useRef<number | null>(null);
   useEffect(() => {
-    const tick = () => {
-      const remaining = Math.max(0, autoAdvanceAt - Date.now());
-      setSecs(Math.ceil(remaining / 1000));
-      if (remaining > 0) rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+    const tick = () => { setS(Math.ceil(Math.max(0, autoAdvanceAt - Date.now()) / 1000)); raf.current = requestAnimationFrame(tick); };
+    raf.current = requestAnimationFrame(tick);
+    return () => { if (raf.current) cancelAnimationFrame(raf.current); };
   }, [autoAdvanceAt]);
-
-  return <span className="text-white/60 text-sm ml-2">(auto in {secs}s)</span>;
+  return <span className="text-white/60 text-base ml-1">{label(s)}</span>;
 }
 
 function ReactionsOverlay({ reactions }: { reactions: FloatingReaction[] }) {
   return (
     <div className="pointer-events-none fixed inset-0 z-50 overflow-hidden">
       {reactions.map(r => (
-        <div
-          key={r.id}
-          className="absolute bottom-24 animate-bounce"
-          style={{ left: `${r.x}%`, animation: 'floatUp 2s ease-out forwards' }}
-        >
-          <div className="text-center">
-            <div className="text-4xl">{r.emoji}</div>
-            <div className="text-xs text-white font-bold bg-black/40 rounded-full px-2 py-0.5 mt-1">{r.playerName}</div>
-          </div>
+        <div key={r.id} className="absolute bottom-24" style={{ left: `${r.x}%`, animation: 'floatUp 2s ease-out forwards' }}>
+          <div className="text-5xl">{r.emoji}</div>
+          <div className="text-xs text-white font-black bg-black/40 rounded-full px-2 mt-1 text-center">{r.playerName}</div>
         </div>
       ))}
     </div>
   );
 }
 
-function ReactionBar({ onReact }: { onReact: (emoji: string) => void }) {
-  const EMOJIS = ['👍', '🎉', '😱', '❤️', '😂', '🔥'];
+function TeamBanner({ teamScores }: { teamScores: { red: number; blue: number } }) {
   return (
-    <div className="flex gap-2 justify-center mt-3">
-      {EMOJIS.map(e => (
-        <button
-          key={e}
-          onClick={() => onReact(e)}
-          className="text-2xl bg-white/20 hover:bg-white/40 rounded-full w-10 h-10 flex items-center justify-center transition-all active:scale-90"
-        >
-          {e}
-        </button>
+    <div className="flex gap-3 justify-center px-4 py-2">
+      <div className="bg-gradient-to-b from-rose-400 to-red-600 rounded-2xl px-5 py-3 font-black text-white gummy-btn flex items-center gap-2 text-lg">🔴 {teamScores.red}</div>
+      <div className="text-white/50 font-black self-center text-xl">vs</div>
+      <div className="bg-gradient-to-b from-sky-400 to-blue-600 rounded-2xl px-5 py-3 font-black text-white gummy-btn flex items-center gap-2 text-lg">🔵 {teamScores.blue}</div>
+    </div>
+  );
+}
+
+function CountdownOverlay({ onDone }: { onDone: () => void }) {
+  const [n, setN] = useState(3);
+  useEffect(() => {
+    if (n <= 0) { onDone(); return; }
+    const t = setTimeout(() => setN(c => c - 1), 900);
+    return () => clearTimeout(t);
+  }, [n, onDone]);
+  if (n <= 0) return null;
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <span key={n} className="text-[12rem] font-black text-white kid-title drop-shadow-2xl" style={{ animation: 'pingOnce 0.8s ease-out' }}>{n}</span>
+    </div>
+  );
+}
+
+function ReconnectOverlay({ visible, title, hint }: { visible: boolean; title: string; hint: string }) {
+  if (!visible) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="bubble-card p-8 text-center max-w-xs mx-4">
+        <div className="text-6xl mb-3 animate-spin">⏳</div>
+        <p className="text-2xl font-black text-slate-800">{title}</p>
+        <p className="text-base text-slate-500 mt-2">{hint}</p>
+      </div>
+    </div>
+  );
+}
+
+// Colorful player bird badges
+const PLAYER_EMOJIS = ['🐦', '🐧', '🦜', '🦆', '🐤', '🦅', '🦉', '🦚'];
+const PLAYER_COLORS = [
+  'from-rose-400 to-red-500',
+  'from-amber-400 to-orange-500',
+  'from-emerald-400 to-green-500',
+  'from-sky-400 to-blue-500',
+  'from-violet-400 to-purple-500',
+  'from-pink-400 to-rose-500',
+  'from-cyan-400 to-teal-500',
+  'from-lime-400 to-green-500',
+];
+
+function PlayerBadge({ name, index, isMe, connected, team, eliminated, streak, score: pts, showTeams }: {
+  name: string; index: number; isMe: boolean; connected?: boolean; team?: string; eliminated?: boolean;
+  streak?: number; score?: number; showTeams?: boolean;
+}) {
+  const emoji = PLAYER_EMOJIS[index % PLAYER_EMOJIS.length];
+  const color = isMe ? 'from-yellow-400 to-amber-500' : PLAYER_COLORS[index % PLAYER_COLORS.length];
+  return (
+    <div className={`flex items-center gap-2 bg-gradient-to-b ${color} rounded-2xl px-3 py-2.5 gummy-btn ${!connected ? 'opacity-40' : ''} ${eliminated ? 'opacity-30' : ''}`}>
+      <span className="text-2xl select-none">{emoji}</span>
+      <span className={`font-black text-white kid-label text-base ${eliminated ? 'line-through' : ''}`}>{name}</span>
+      {showTeams && team && <span className={`w-3 h-3 rounded-full ml-1 ${team === 'red' ? 'bg-red-200' : 'bg-sky-200'}`} />}
+      {streak && streak >= 2 && <span className="text-xs font-black text-white/90">🔥{streak}</span>}
+      {pts !== undefined && <span className="font-black text-white/90 text-sm ml-auto">⭐{pts}</span>}
+    </div>
+  );
+}
+
+function Leaderboard({ players, myId, showTeams }: { players: RoomStateDTO['players']; myId?: string; showTeams?: boolean }) {
+  const sorted = [...players].filter(p => !p.isHost).sort((a, b) => b.score - a.score);
+  const MEDALS = ['🥇', '🥈', '🥉'];
+  return (
+    <div className="space-y-2 w-full">
+      {sorted.map((p, i) => (
+        <div key={p.id} className={`flex items-center gap-2 px-3 py-2.5 rounded-2xl ${p.id === myId ? 'bg-yellow-400/30 ring-2 ring-yellow-400/50' : 'bg-black/10'} ${p.eliminated ? 'opacity-30' : ''}`}>
+          <span className="text-xl w-7 text-center">{i < 3 ? MEDALS[i] : `${i + 1}`}</span>
+          {showTeams && p.team && <span className={`w-2.5 h-2.5 rounded-full ${p.team === 'red' ? 'bg-red-400' : 'bg-sky-400'}`} />}
+          <span className={`flex-1 font-black text-base text-white kid-label ${p.eliminated ? 'line-through' : ''}`}>{p.name}</span>
+          {p.streak >= 2 && <span className="text-sm font-black text-yellow-300">🔥{p.streak}</span>}
+          <span className="font-black text-yellow-300 text-base kid-label">{p.score}</span>
+        </div>
       ))}
     </div>
   );
 }
 
-function TeamScoresBanner({ teamScores }: { teamScores: { red: number; blue: number } }) {
-  return (
-    <div className="flex gap-3 justify-center px-4 mb-2">
-      <div className="flex items-center gap-2 bg-red-500/80 rounded-xl px-4 py-1.5 text-white font-bold">
-        <span className="text-lg">🔴</span>
-        <span>{teamScores.red}</span>
-      </div>
-      <div className="text-white font-bold self-center text-sm opacity-60">vs</div>
-      <div className="flex items-center gap-2 bg-blue-500/80 rounded-xl px-4 py-1.5 text-white font-bold">
-        <span className="text-lg">🔵</span>
-        <span>{teamScores.blue}</span>
-      </div>
-    </div>
-  );
-}
-
-/** 3-2-1 overlay — shown for 3s at start of each ROUND_ACTIVE */
-function CountdownOverlay({ onDone }: { onDone: () => void }) {
-  const [count, setCount] = useState(3);
-
-  useEffect(() => {
-    if (count <= 0) { onDone(); return; }
-    const t = setTimeout(() => setCount(c => c - 1), 900);
-    return () => clearTimeout(t);
-  }, [count, onDone]);
-
-  if (count <= 0) return null;
-  return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <span
-        key={count}
-        className="text-[12rem] font-black text-white drop-shadow-2xl"
-        style={{ animation: 'pingOnce 0.8s ease-out' }}
-      >
-        {count}
-      </span>
-    </div>
-  );
-}
-
-/** Reconnect overlay — shown when socket disconnects */
-function ReconnectOverlay({ visible }: { visible: boolean }) {
-  if (!visible) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className="bg-white dark:bg-gray-800 rounded-3xl p-8 text-center shadow-2xl max-w-xs mx-4">
-        <div className="text-6xl mb-4 animate-spin">⏳</div>
-        <p className="text-xl font-extrabold text-gray-800 dark:text-white">Reconnecting...</p>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">Hang tight, we&apos;ll get you back in!</p>
-      </div>
-    </div>
-  );
-}
-
-// ─── Host view ────────────────────────────────────────────────────────────────
+// ─── Host Lobby ───────────────────────────────────────────────────────────────
 
 function HostLobby({ state, roomId, onLeave }: { state: RoomStateDTO; roomId: string; onLeave: () => void }) {
   const socket = getSocket();
-  const [category, setCategory] = useState<GameSettings['category']>(state.settings.category);
+  const t = useT();
+  const [cat, setCat] = useState<GameSettings['category']>(state.settings.category);
   const [rounds, setRounds] = useState(state.settings.totalRounds);
-  const [timeLimit, setTimeLimit] = useState(state.settings.timeLimit);
-  const [autoAdvance, setAutoAdvance] = useState(state.settings.autoAdvanceDelay ?? 0);
+  const [time, setTime] = useState(state.settings.timeLimit);
+  const [autoAdv, setAutoAdv] = useState(state.settings.autoAdvanceDelay ?? 0);
   const [gameMode, setGameMode] = useState<GameSettings['gameMode']>(state.settings.gameMode ?? 'standard');
   const [inputMode, setInputMode] = useState<GameSettings['inputMode']>(state.settings.inputMode ?? 'buttons');
   const [copied, setCopied] = useState(false);
+  const [showAdv, setShowAdv] = useState(false);
 
-  const updateSettings = (patch: Partial<GameSettings>) => {
-    socket.emit('room:settings:update', { roomId, settings: patch });
-  };
+  const upd = (p: Partial<GameSettings>) => socket.emit('room:settings:update', { roomId, settings: p });
+  const start = () => socket.emit('room:start', { roomId }, (r) => { if ('error' in r) toast.error(r.error); });
+  const copy = () => { navigator.clipboard.writeText(`${window.location.origin}/?code=${state.roomCode}`).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); };
 
-  const start = () => {
-    socket.emit('room:start', { roomId }, (res) => {
-      if ('error' in res) toast.error(res.error);
-    });
-  };
-
-  const copyLink = () => {
-    const url = `${window.location.origin}/?code=${state.roomCode}`;
-    navigator.clipboard.writeText(url).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
-  const nonHostPlayers = state.players.filter(p => !p.isHost);
-  const ALL_CATEGORIES: GameSettings['category'][] = [
-    'KOREAN_WORDS', 'HANGUL_LETTERS', 'KOREAN_VERBS', 'KOREAN_TO_ENGLISH', 'KOREAN_NUMBERS', 'KOREAN_SENTENCES',
+  const nonHost = state.players.filter(p => !p.isHost);
+  const CATS: { id: GameSettings['category']; emoji: string }[] = [
+    { id: 'KOREAN_WORDS', emoji: '🇰🇷' },
+    { id: 'HANGUL_LETTERS', emoji: '🔤' },
+    { id: 'KOREAN_VERBS', emoji: '🏃' },
+    { id: 'KOREAN_TO_ENGLISH', emoji: '📝' },
+    { id: 'KOREAN_NUMBERS', emoji: '🔢' },
+    { id: 'KOREAN_SENTENCES', emoji: '📖' },
   ];
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-600 to-purple-700 flex flex-col items-center justify-center p-6 gap-6">
-      {/* Room code banner */}
-      <div className="bg-white rounded-3xl shadow-xl px-8 py-5 text-center">
-        <p className="text-gray-500 text-sm font-semibold">Room Code</p>
-        <p className="text-6xl font-black tracking-widest text-indigo-600 mt-1">{state.roomCode}</p>
-        <button
-          onClick={copyLink}
-          className="mt-2 text-sm font-semibold text-indigo-500 hover:text-indigo-700 transition-all"
-        >
-          {copied ? '✓ Link copied!' : '🔗 Copy invite link'}
-        </button>
-      </div>
+    <Sky>
+      <div className="relative z-10 flex flex-col gap-4 p-4 flex-1 overflow-y-auto">
 
-      <div className="w-full max-w-lg grid grid-cols-1 gap-4">
-        {/* Settings */}
-        <div className="bg-white/20 rounded-3xl p-5 text-white">
-          <h2 className="font-bold text-lg mb-3">⚙️ Settings</h2>
+        {/* Language picker */}
+        <div className="flex justify-end">
+          <LangPill />
+        </div>
 
-          {/* Category */}
-          <div className="mb-3">
-            <p className="text-sm font-semibold mb-2">Category</p>
-            <div className="grid grid-cols-2 gap-2">
-              {ALL_CATEGORIES.map(cat => (
-                <button
-                  key={cat}
-                  onClick={() => { setCategory(cat); updateSettings({ category: cat }); }}
-                  className={`py-2 px-3 rounded-xl font-semibold text-sm transition-all ${category === cat ? 'bg-white text-indigo-700' : 'bg-white/20 text-white'}`}
-                >
-                  {categoryLabel(cat)}
-                </button>
-              ))}
-            </div>
-          </div>
+        {/* Room code — big bubble card */}
+        <div className="bubble-card p-6 text-center mt-2">
+          <p className="text-gray-400 text-sm font-black uppercase tracking-widest">{t.room_code_label}</p>
+          <p className="text-8xl font-black text-slate-800 tracking-[0.12em] mt-1 kid-title" style={{ WebkitTextStroke: '4px #b34500' }}>{state.roomCode}</p>
+          <button onClick={copy} className="mt-2 text-sky-500 hover:text-sky-700 text-base font-black transition-colors">
+            {copied ? '✓ ' + t.link_copied : t.copy_link}
+          </button>
+        </div>
 
-          {/* Game Mode */}
-          <div className="mb-3">
-            <p className="text-sm font-semibold mb-2">Game Mode</p>
-            <div className="flex gap-2">
-              {(['standard', 'teams', 'elimination'] as const).map(mode => (
-                <button
-                  key={mode}
-                  onClick={() => { setGameMode(mode); updateSettings({ gameMode: mode }); }}
-                  className={`flex-1 py-2 rounded-xl font-semibold text-sm transition-all capitalize ${gameMode === mode ? 'bg-white text-indigo-700' : 'bg-white/20 text-white'}`}
-                >
-                  {mode === 'standard' ? '🎮 Standard' : mode === 'teams' ? '🔴🔵 Teams' : '💀 Elimination'}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Input Mode */}
-          <div className="mb-3">
-            <p className="text-sm font-semibold mb-2">Answer Mode</p>
-            <div className="flex gap-2">
-              {(['buttons', 'typed'] as const).map(mode => (
-                <button
-                  key={mode}
-                  onClick={() => { setInputMode(mode); updateSettings({ inputMode: mode }); }}
-                  className={`flex-1 py-2 rounded-xl font-semibold text-sm transition-all ${inputMode === mode ? 'bg-white text-indigo-700' : 'bg-white/20 text-white'}`}
-                >
-                  {mode === 'buttons' ? '🔲 Buttons' : '⌨️ Typed'}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex gap-4">
-            <div className="flex-1">
-              <label className="text-sm font-semibold">Rounds: {rounds}</label>
-              <input type="range" min={5} max={30} step={5} value={rounds}
-                onChange={e => { setRounds(Number(e.target.value)); updateSettings({ totalRounds: Number(e.target.value) }); }}
-                className="w-full mt-1 accent-yellow-400" />
-            </div>
-            <div className="flex-1">
-              <label className="text-sm font-semibold">Time: {timeLimit}s</label>
-              <input type="range" min={10} max={30} step={5} value={timeLimit}
-                onChange={e => { setTimeLimit(Number(e.target.value)); updateSettings({ timeLimit: Number(e.target.value) }); }}
-                className="w-full mt-1 accent-yellow-400" />
-            </div>
-          </div>
-
-          <div className="mt-3">
-            <label className="text-sm font-semibold">
-              Auto-advance: {autoAdvance === 0 ? 'Off' : `${autoAdvance}s`}
-            </label>
-            <input type="range" min={0} max={10} step={1} value={autoAdvance}
-              onChange={e => { setAutoAdvance(Number(e.target.value)); updateSettings({ autoAdvanceDelay: Number(e.target.value) }); }}
-              className="w-full mt-1 accent-yellow-400" />
-            <p className="text-xs text-white/60 mt-1">Automatically start next round after result</p>
+        {/* Category — big emoji buttons */}
+        <div className="sky-card p-4 rounded-[2rem]">
+          <p className="text-white/70 text-sm font-black uppercase tracking-widest mb-3 text-center">{t.category}</p>
+          <div className="grid grid-cols-3 gap-2">
+            {CATS.map(c => (
+              <button key={c.id} onClick={() => { setCat(c.id); upd({ category: c.id }); }}
+                className={`py-2 px-2 rounded-2xl font-black gummy-btn transition-all flex flex-row items-center justify-center gap-2 ${cat === c.id ? 'bg-yellow-400 text-slate-900 ring-2 ring-yellow-300' : 'bg-white/15 text-white'}`}>
+                <span className="text-2xl leading-none">{c.emoji}</span>
+                <span className="text-xs font-black leading-tight text-center">{t.cat_label(c.id).replace(/^\S+\s/, '')}</span>
+              </button>
+            ))}
           </div>
         </div>
 
         {/* Players */}
-        <div className="bg-white/20 rounded-3xl p-5 text-white">
-          <h2 className="font-bold text-lg mb-3">
-            👥 Players ({nonHostPlayers.filter(p => p.connected).length}/{state.maxPlayers})
-          </h2>
-
-          {gameMode === 'teams' && nonHostPlayers.length > 0 && (
-            <p className="text-xs text-white/60 mb-2">Assign teams before starting:</p>
-          )}
-
+        <div className="sky-card p-4 rounded-[2rem]">
+          <p className="text-white/70 text-sm font-black uppercase tracking-widest mb-3 text-center">
+            {t.players_label(nonHost.filter(p => p.connected).length, state.maxPlayers)}
+          </p>
           <div className="flex flex-wrap gap-2">
-            {nonHostPlayers.map(p => (
+            {nonHost.map((p, i) => (
               <div key={p.id} className="flex items-center gap-1">
-                <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                  p.connected ? (
-                    p.team === 'red' ? 'bg-red-400/80' :
-                    p.team === 'blue' ? 'bg-blue-400/80' :
-                    'bg-white/30'
-                  ) : 'bg-white/10 opacity-50'
-                }`}>
-                  {p.name}
-                </span>
+                <PlayerBadge name={p.name} index={i} isMe={false} connected={p.connected} team={p.team} showTeams={gameMode === 'teams'} />
                 {gameMode === 'teams' && (
                   <>
-                    <button
-                      onClick={() => socket.emit('room:assign-team', { roomId, targetId: p.id, team: 'red' })}
-                      className={`text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center transition-all ${p.team === 'red' ? 'bg-red-400 text-white' : 'bg-white/20 hover:bg-red-300'}`}
-                      title="Red team"
-                    >R</button>
-                    <button
-                      onClick={() => socket.emit('room:assign-team', { roomId, targetId: p.id, team: 'blue' })}
-                      className={`text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center transition-all ${p.team === 'blue' ? 'bg-blue-400 text-white' : 'bg-white/20 hover:bg-blue-300'}`}
-                      title="Blue team"
-                    >B</button>
+                    <button onClick={() => socket.emit('room:assign-team', { roomId, targetId: p.id, team: 'red' })}
+                      className={`text-sm font-black rounded-full w-8 h-8 flex items-center justify-center gummy-btn ${p.team === 'red' ? 'bg-rose-500 text-white' : 'bg-white/20 text-white/50'}`}>R</button>
+                    <button onClick={() => socket.emit('room:assign-team', { roomId, targetId: p.id, team: 'blue' })}
+                      className={`text-sm font-black rounded-full w-8 h-8 flex items-center justify-center gummy-btn ${p.team === 'blue' ? 'bg-sky-500 text-white' : 'bg-white/20 text-white/50'}`}>B</button>
                   </>
                 )}
-                <button
-                  onClick={() => socket.emit('room:kick', { roomId, targetId: p.id })}
-                  className="text-white/50 hover:text-red-300 text-xs font-bold transition-all"
-                  title={`Kick ${p.name}`}
-                >✕</button>
+                <button onClick={() => socket.emit('room:kick', { roomId, targetId: p.id })} className="text-white/30 hover:text-red-300 text-base font-black ml-1">✕</button>
               </div>
             ))}
-            {nonHostPlayers.length === 0 && (
-              <p className="text-white/50 text-sm">Waiting for players to join...</p>
-            )}
+            {!nonHost.length && <p className="text-white/50 text-base font-black">{t.waiting_players}</p>}
           </div>
         </div>
+
+        {/* Advanced settings toggle */}
+        <button onClick={() => setShowAdv(v => !v)} className="text-white/60 hover:text-white text-base font-black text-center kid-label">
+          {t.settings} {showAdv ? '▲' : '▼'}
+        </button>
+
+        {showAdv && (
+          <div className="sky-card p-4 rounded-[2rem] flex flex-col gap-4">
+            {/* Game mode */}
+            <div>
+              <p className="text-white/70 text-sm font-black uppercase tracking-widest mb-2 text-center">{t.game_mode}</p>
+              <div className="flex gap-2">
+                {(['standard', 'teams', 'elimination'] as const).map(m => (
+                  <button key={m} onClick={() => { setGameMode(m); upd({ gameMode: m }); }}
+                    className={`flex-1 py-3 rounded-2xl font-black text-sm gummy-btn ${gameMode === m ? 'bg-yellow-400 text-slate-900' : 'bg-white/15 text-white/70'}`}>
+                    {m === 'standard' ? t.mode_standard : m === 'teams' ? t.mode_teams : t.mode_elimination}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Input mode */}
+            <div>
+              <p className="text-white/70 text-sm font-black uppercase tracking-widest mb-2 text-center">{t.answer_mode}</p>
+              <div className="flex gap-2">
+                {(['buttons', 'typed'] as const).map(m => (
+                  <button key={m} onClick={() => { setInputMode(m); upd({ inputMode: m }); }}
+                    className={`flex-1 py-3 rounded-2xl font-black text-sm gummy-btn ${inputMode === m ? 'bg-yellow-400 text-slate-900' : 'bg-white/15 text-white/70'}`}>
+                    {m === 'buttons' ? t.mode_buttons : t.mode_typed}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Rounds & time sliders */}
+            <div className="flex gap-4">
+              <div className="flex-1">
+                <p className="text-white/70 text-sm font-black text-center">{t.rounds_label(rounds)}</p>
+                <input type="range" min={5} max={30} step={5} value={rounds} onChange={e => { setRounds(+e.target.value); upd({ totalRounds: +e.target.value }); }} className="w-full mt-1 accent-yellow-400" />
+              </div>
+              <div className="flex-1">
+                <p className="text-white/70 text-sm font-black text-center">{t.time_label(time)}</p>
+                <input type="range" min={10} max={30} step={5} value={time} onChange={e => { setTime(+e.target.value); upd({ timeLimit: +e.target.value }); }} className="w-full mt-1 accent-yellow-400" />
+              </div>
+            </div>
+            <div>
+              <p className="text-white/70 text-sm font-black text-center">{t.auto_advance_label(autoAdv)}</p>
+              <input type="range" min={0} max={10} step={1} value={autoAdv} onChange={e => { setAutoAdv(+e.target.value); upd({ autoAdvanceDelay: +e.target.value }); }} className="w-full mt-1 accent-yellow-400" />
+            </div>
+          </div>
+        )}
+
+        {/* BIG Start button */}
+        <button onClick={start} disabled={nonHost.length < 1}
+          className="bg-gradient-to-b from-emerald-400 to-green-600 text-white font-black text-3xl py-7 rounded-2xl gummy-btn">
+          {t.start_game}
+        </button>
+        <button onClick={onLeave} className="text-white/40 hover:text-white text-base font-bold text-center underline transition-colors pb-2">{t.close_room}</button>
       </div>
-
-      <button
-        onClick={start}
-        disabled={nonHostPlayers.length < 1}
-        className="bg-yellow-400 hover:bg-yellow-300 disabled:bg-gray-400 text-gray-900 font-extrabold text-2xl px-16 py-5 rounded-3xl shadow-xl transition-all active:scale-95"
-      >
-        🎮 Start Game!
-      </button>
-
-      <button
-        onClick={onLeave}
-        className="text-white/70 hover:text-white text-sm font-semibold underline transition-all"
-      >
-        ✕ Close Room
-      </button>
-    </div>
+    </Sky>
   );
 }
 
+// ─── Host Game ────────────────────────────────────────────────────────────────
+
 function HostGame({ state, roomId, onLeave }: { state: RoomStateDTO; roomId: string; onLeave: () => void }) {
   const socket = getSocket();
+  const t = useT();
   const isTeams = state.settings.gameMode === 'teams';
-
-  const nextRound = () => socket.emit('room:next-round', { roomId });
-  const playAgain = () => socket.emit('room:play-again', { roomId });
-
-  const q = state.currentQuestion;
   const isResult = state.status === 'ROUND_RESULT';
   const isOver = state.status === 'GAME_OVER';
+  const q = state.currentQuestion;
+  const prevStatus = useRef(state.status);
 
-  // Audio pronunciation on round result
-  const prevStatusRef = useRef(state.status);
   useEffect(() => {
-    if (prevStatusRef.current !== 'ROUND_RESULT' && state.status === 'ROUND_RESULT') {
-      if (state.correctAnswer) {
-        // Small delay so the result is visible first
-        setTimeout(() => speakKorean(state.correctAnswer!), 600);
-      }
-    }
-    prevStatusRef.current = state.status;
+    if (prevStatus.current !== 'ROUND_RESULT' && state.status === 'ROUND_RESULT' && state.correctAnswer)
+      setTimeout(() => speakKorean(state.correctAnswer!), 600);
+    prevStatus.current = state.status;
   }, [state.status, state.correctAnswer]);
 
-  const promptDisplay = q ? (
-    q.promptType === 'text' ? (
-      <div className="bg-white/20 rounded-2xl px-8 py-5 max-w-sm text-center">
-        <p className="text-white text-2xl font-bold">{q.prompt}</p>
-      </div>
-    ) : (
-      <div className={`text-[10rem] leading-none select-none transition-all duration-300 ${isResult ? 'opacity-70 scale-90' : 'drop-shadow-2xl'}`}>
-        {q.prompt}
-      </div>
-    )
-  ) : null;
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-700 to-purple-800 flex flex-col">
-      {/* Top bar */}
-      <div className="flex items-center justify-between px-6 py-4 text-white">
-        <div className="bg-white/20 rounded-xl px-4 py-2">
-          <span className="font-bold">Round {state.currentRound} / {state.settings.totalRounds}</span>
-        </div>
-        <div className="text-center">
-          <span className="font-bold text-lg">{categoryLabel(state.settings.category)}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="bg-white/20 rounded-xl px-4 py-2">
-            <span className="font-mono font-bold">{state.roomCode}</span>
-          </div>
-          <button
-            onClick={onLeave}
-            className="bg-white/20 hover:bg-white/30 text-white font-bold px-3 py-2 rounded-xl transition-all text-sm"
-          >
-            ✕ Close
-          </button>
+    <Sky ground={false}>
+      <div className="relative z-10 flex items-center justify-between px-4 py-3">
+        <div className="sky-card rounded-2xl px-3 py-1.5 font-black text-white text-base kid-label">{t.round_of(state.currentRound, state.settings.totalRounds)}</div>
+        <span className="font-black text-white/80 text-base kid-label">{t.cat_label(state.settings.category)}</span>
+        <div className="flex gap-2">
+          <span className="sky-card rounded-2xl px-3 py-1.5 font-black text-white text-base tracking-widest kid-label">{state.roomCode}</span>
+          <button onClick={onLeave} className="sky-card rounded-2xl px-3 py-1.5 font-black text-white text-base gummy-btn">✕</button>
         </div>
       </div>
 
-      {/* Team scores */}
-      {isTeams && state.teamScores && <TeamScoresBanner teamScores={state.teamScores} />}
+      {isTeams && state.teamScores && <div className="relative z-10"><TeamBanner teamScores={state.teamScores} /></div>}
 
-      {/* Main content */}
-      <div className="flex-1 flex gap-4 px-6 pb-6">
-        {/* Left: question display */}
-        <div className="flex-1 flex flex-col items-center justify-center">
+      <div className="relative z-10 flex-1 flex gap-3 px-4 pb-4">
+        <div className="flex-1 flex flex-col items-center justify-center gap-4">
           {!isOver && q && (
             <>
-              <p className="text-white/70 text-xl font-semibold mb-2">{q.categoryHint}</p>
-              {promptDisplay}
-
+              <span className="sky-card rounded-full px-5 py-2 text-white/80 text-base font-black">{q.categoryHint}</span>
+              {q.promptType === 'text'
+                ? <div className="bubble-card px-8 py-6 text-center w-full max-w-sm"><p className="text-slate-800 text-4xl font-black">{q.prompt}</p></div>
+                : <div className={`text-[9rem] leading-none select-none transition-all ${isResult ? 'opacity-50 scale-90' : 'drop-shadow-2xl'}`}>{q.prompt}</div>
+              }
               {isResult && (
-                <div className="mt-6 text-center animate-bounce">
-                  {state.roundWinner ? (
-                    <>
-                      <p className="text-yellow-300 text-3xl font-black">🏆 {state.roundWinner.name}!</p>
-                      <p className="text-white text-5xl font-black mt-2">{state.correctAnswer}</p>
-                    </>
-                  ) : (
-                    <>
-                      <p className="text-orange-300 text-2xl font-bold">⏰ Time&apos;s up!</p>
-                      <p className="text-white text-5xl font-black mt-2">{state.correctAnswer}</p>
-                    </>
-                  )}
-                  {q.hint && (
-                    <p className="text-white/60 text-sm mt-2">{q.hint}</p>
-                  )}
-                  <button
-                    onClick={() => speakKorean(state.correctAnswer ?? '')}
-                    className="mt-3 text-white/70 hover:text-white text-sm font-semibold transition-all"
-                    title="Pronounce"
-                  >
-                    🔊 Pronounce
-                  </button>
+                <div className="text-center pop-in">
+                  {state.roundWinner
+                    ? <p className="text-yellow-300 text-3xl font-black kid-label">🏆 {state.roundWinner.name}</p>
+                    : <p className="text-orange-200 text-2xl font-black kid-label">{t.times_up}</p>}
+                  <p className="text-white text-6xl font-black kid-title mt-2">{state.correctAnswer}</p>
+                  <button onClick={() => speakKorean(state.correctAnswer ?? '')} className="mt-2 text-white/50 hover:text-white text-base font-black transition-colors">{t.pronounce}</button>
                 </div>
               )}
-
-              {!isResult && state.roundExpiresAt && (
-                <div className="w-64 mt-8">
-                  <TimerBar expiresAt={state.roundExpiresAt} timeLimit={state.settings.timeLimit} />
-                </div>
-              )}
-
+              {!isResult && state.roundExpiresAt && <div className="w-full max-w-xs"><TimerBar expiresAt={state.roundExpiresAt} timeLimit={state.settings.timeLimit} /></div>}
               {isResult && (
-                <div className="mt-8 text-center">
-                  <button onClick={nextRound} className="bg-yellow-400 hover:bg-yellow-300 text-gray-900 font-extrabold text-xl px-10 py-4 rounded-2xl shadow-lg transition-all active:scale-95">
-                    Next Round →
-                  </button>
-                  {state.autoAdvanceAt && <AutoAdvanceCountdown autoAdvanceAt={state.autoAdvanceAt} />}
+                <div className="flex items-center gap-3">
+                  <button onClick={() => socket.emit('room:next-round', { roomId })} className="bg-gradient-to-b from-emerald-400 to-green-600 text-white font-black text-xl px-10 py-5 rounded-2xl gummy-btn">{t.next_round}</button>
+                  {state.autoAdvanceAt && <AutoAdv autoAdvanceAt={state.autoAdvanceAt} label={t.auto_in} />}
                 </div>
               )}
             </>
           )}
-
           {isOver && (
-            <div className="text-center text-white w-full max-w-sm">
-              <p className="text-5xl font-black mb-1">🎉 Game Over!</p>
-              {isTeams && state.teamScores ? (
-                <div className="mb-4">
-                  <p className="text-xl text-white/70 mb-2">Team Scores</p>
-                  <div className="flex gap-4 justify-center">
-                    <div className="bg-red-500/60 rounded-2xl px-6 py-3 text-center">
-                      <p className="text-lg font-bold">🔴 Red</p>
-                      <p className="text-3xl font-black">{state.teamScores.red}</p>
-                    </div>
-                    <div className="bg-blue-500/60 rounded-2xl px-6 py-3 text-center">
-                      <p className="text-lg font-bold">🔵 Blue</p>
-                      <p className="text-3xl font-black">{state.teamScores.blue}</p>
-                    </div>
-                  </div>
-                  {state.teamScores.red > state.teamScores.blue ? (
-                    <p className="text-yellow-300 text-2xl font-black mt-2">🔴 Red Wins!</p>
-                  ) : state.teamScores.blue > state.teamScores.red ? (
-                    <p className="text-yellow-300 text-2xl font-black mt-2">🔵 Blue Wins!</p>
-                  ) : (
-                    <p className="text-yellow-300 text-2xl font-black mt-2">🤝 Tie!</p>
-                  )}
-                </div>
-              ) : (
-                <p className="text-xl text-white/70 mb-6">Final Rankings</p>
+            <div className="text-center text-white w-full max-w-xs">
+              <p className="text-6xl font-black kid-title mb-3">{t.game_over}</p>
+              {isTeams && state.teamScores && (
+                <>
+                  <TeamBanner teamScores={state.teamScores} />
+                  <p className="text-yellow-300 text-2xl font-black kid-label my-2">
+                    {state.teamScores.red > state.teamScores.blue ? t.red_wins : state.teamScores.blue > state.teamScores.red ? t.blue_wins : t.tie}
+                  </p>
+                </>
               )}
-              <div className="bg-white/10 rounded-3xl p-4 mb-6 space-y-2">
-                {[...state.players].filter(p => !p.isHost).sort((a, b) => b.score - a.score).map((p, i) => (
-                  <div key={p.id} className="flex items-center gap-3 px-4 py-3 bg-white/10 rounded-2xl">
-                    <span className="text-2xl">{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}</span>
-                    {isTeams && p.team && (
-                      <span className={`w-3 h-3 rounded-full ${p.team === 'red' ? 'bg-red-400' : 'bg-blue-400'}`} />
-                    )}
-                    <span className="flex-1 font-bold text-lg truncate text-left">{p.name}</span>
-                    <span className="text-2xl font-black text-yellow-300">{p.score}</span>
-                  </div>
-                ))}
-              </div>
-              <button onClick={playAgain} className="bg-yellow-400 hover:bg-yellow-300 text-gray-900 font-extrabold text-xl px-10 py-4 rounded-2xl shadow-lg transition-all">
-                🔄 Play Again
-              </button>
+              {!isTeams && <p className="text-white/60 text-base mb-3 kid-label">{t.final_rankings}</p>}
+              <div className="sky-card rounded-3xl p-3 mb-5"><Leaderboard players={state.players} showTeams={isTeams} /></div>
+              <button onClick={() => socket.emit('room:play-again', { roomId })} className="bg-gradient-to-b from-emerald-400 to-green-600 text-white font-black text-xl px-10 py-5 rounded-2xl gummy-btn">{t.play_again}</button>
             </div>
           )}
         </div>
 
-        {/* Right: scoreboard */}
-        <div className="w-72 bg-white/10 rounded-3xl p-4 flex flex-col gap-2">
-          <h2 className="text-white font-bold text-lg text-center mb-2">🏆 Scores</h2>
-          <Scoreboard
-            players={state.players.filter(p => !p.isHost)}
-            highlightId={state.roundWinner?.id}
-            showTeams={isTeams}
-          />
+        {/* Scoreboard sidebar */}
+        <div className="w-52 sky-card rounded-3xl p-3 flex flex-col">
+          <p className="text-white/70 text-sm font-black uppercase tracking-widest text-center mb-3">{t.scores}</p>
+          <Leaderboard players={state.players} showTeams={isTeams} />
         </div>
       </div>
-    </div>
+    </Sky>
   );
 }
 
-// ─── Player view ──────────────────────────────────────────────────────────────
+// ─── Player Lobby ─────────────────────────────────────────────────────────────
 
-function PlayerLobby({ state, myId, onLeave }: { state: RoomStateDTO; myId: string; onLeave: () => void }) {
+const CAT_EMOJIS: Record<string, string> = {
+  KOREAN_WORDS: '🇰🇷', HANGUL_LETTERS: '🔤', KOREAN_VERBS: '🏃',
+  KOREAN_TO_ENGLISH: '📝', KOREAN_NUMBERS: '🔢', KOREAN_SENTENCES: '📖',
+};
+
+function PlayerLobby({ state, roomId, myId, onLeave }: { state: RoomStateDTO; roomId: string; myId: string; onLeave: () => void }) {
+  const socket = getSocket();
+  const t = useT();
+  const { setMyName } = useGameStore();
   const me = state.players.find(p => p.id === myId);
-  const host = state.players.find(p => p.isHost);
-  const nonHostPlayers = state.players.filter(p => !p.isHost);
+  const nonHost = state.players.filter(p => !p.isHost);
+  const [nameInput, setNameInput] = useState(me?.name ?? '');
+  const [nameSaved, setNameSaved] = useState(false);
+
+  // Keep input in sync if server updates the name (e.g. first load)
+  useEffect(() => {
+    if (me?.name && !nameSaved) setNameInput(me.name);
+  }, [me?.name]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveName = () => {
+    const n = nameInput.trim();
+    if (!n || n === me?.name) return;
+    socket.emit('player:rename', { roomId, newName: n }, (res) => {
+      if ('error' in res) return;
+      setMyName(n);
+      setNameSaved(true);
+    });
+  };
+
+  const { category, totalRounds, timeLimit, gameMode, autoAdvanceDelay } = state.settings;
+
   return (
-    <div className="min-h-screen bg-gradient-to-b from-sky-400 to-indigo-600 flex flex-col items-center justify-center p-6 gap-6 text-white">
-      <div className="text-7xl">🎮</div>
-      <div className="text-center">
-        <p className="text-2xl font-bold">{me?.name ?? 'Player'}</p>
-        <p className="text-sky-200 text-sm">waiting for host to start...</p>
-        {host && <p className="text-sky-100 text-xs mt-1">Hosted by {host.name}</p>}
-      </div>
-      <div className="bg-white/20 rounded-3xl px-8 py-4 text-center">
-        <p className="text-sm font-semibold text-sky-100">Room Code</p>
-        <p className="text-4xl font-black tracking-widest">{state.roomCode}</p>
-      </div>
-      <div className="bg-white/10 rounded-3xl p-4 w-full max-w-xs">
-        <p className="font-semibold text-center mb-3">
-          Players ({nonHostPlayers.length}/{state.maxPlayers})
-        </p>
-        {nonHostPlayers.map(p => (
-          <p key={p.id} className={`text-center py-1 rounded-lg ${p.id === myId ? 'bg-white/30 font-bold px-2' : ''}`}>
-            {p.name}{p.id === myId ? ' 👤' : ''}
-            {state.settings.gameMode === 'teams' && p.team && (
-              <span className={`ml-2 text-xs font-bold ${p.team === 'red' ? 'text-red-200' : 'text-blue-200'}`}>
-                {p.team === 'red' ? '🔴' : '🔵'}
-              </span>
-            )}
+    <Sky>
+      <div className="relative z-10 flex flex-col gap-4 p-4 flex-1 overflow-y-auto">
+
+        {/* Language picker */}
+        <div className="flex justify-end">
+          <LangPill />
+        </div>
+
+        {/* Room code */}
+        <div className="text-center mt-2">
+          <p className="text-white/70 text-sm font-black uppercase tracking-widest">{t.room_code_label}</p>
+          <p className="text-7xl font-black text-white tracking-[0.12em] kid-title">{state.roomCode}</p>
+        </div>
+
+        {/* Name editor */}
+        <div className="bubble-card p-4 flex flex-col gap-3">
+          <p className="text-gray-500 text-sm font-black uppercase tracking-widest text-center">🐣 Your Name</p>
+          <div className="flex gap-2">
+            <input
+              value={nameInput}
+              onChange={e => { setNameInput(e.target.value); setNameSaved(false); }}
+              onKeyDown={e => { if (e.key === 'Enter') saveName(); }}
+              maxLength={20}
+              className="flex-1 bg-amber-50 border-4 border-amber-200 rounded-2xl px-4 py-3 text-2xl font-black text-amber-900 text-center placeholder-amber-200 focus:outline-none focus:border-amber-400"
+            />
+            <button
+              onClick={saveName}
+              disabled={!nameInput.trim() || nameInput.trim() === me?.name}
+              className="bg-gradient-to-b from-emerald-400 to-green-600 text-white font-black text-xl px-5 rounded-2xl gummy-btn disabled:opacity-40"
+            >✓</button>
+          </div>
+        </div>
+
+        {/* Players */}
+        <div className="sky-card p-4 rounded-[2rem]">
+          <p className="text-white/70 text-sm font-black uppercase tracking-widest text-center mb-3">
+            {t.players_label(nonHost.filter(p => p.connected).length, state.maxPlayers)}
           </p>
-        ))}
+          <div className="flex flex-wrap gap-2 justify-center">
+            {nonHost.map((p, i) => (
+              <PlayerBadge key={p.id} name={p.name} index={i} isMe={p.id === myId}
+                connected={p.connected} team={p.team} showTeams={gameMode === 'teams'} />
+            ))}
+          </div>
+        </div>
+
+        {/* Game settings (read-only) */}
+        <div className="sky-card p-4 rounded-[2rem]">
+          <p className="text-white/70 text-sm font-black uppercase tracking-widest text-center mb-3">{t.settings}</p>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="bg-white/15 rounded-2xl p-3 flex flex-col items-center gap-1">
+              <span className="text-3xl">{CAT_EMOJIS[category] ?? '📖'}</span>
+              <span className="text-white text-xs font-black text-center kid-label leading-tight">{t.cat_label(category).replace(/^\S+\s/, '')}</span>
+            </div>
+            <div className="bg-white/15 rounded-2xl p-3 flex flex-col items-center gap-1">
+              <span className="text-3xl">🏁</span>
+              <span className="text-white text-xs font-black kid-label">{t.rounds_label(totalRounds)}</span>
+            </div>
+            <div className="bg-white/15 rounded-2xl p-3 flex flex-col items-center gap-1">
+              <span className="text-3xl">⏱️</span>
+              <span className="text-white text-xs font-black kid-label">{t.time_label(timeLimit)}</span>
+            </div>
+          </div>
+          <div className="flex justify-center gap-2 mt-2 flex-wrap">
+            <span className="bg-white/15 rounded-xl px-3 py-1 text-white text-xs font-black kid-label">
+              {gameMode === 'standard' ? t.mode_standard : gameMode === 'teams' ? t.mode_teams : t.mode_elimination}
+            </span>
+            <span className="bg-white/15 rounded-xl px-3 py-1 text-white text-xs font-black kid-label">
+              {t.auto_advance_label(autoAdvanceDelay ?? 0)}
+            </span>
+          </div>
+        </div>
+
+        {/* Waiting */}
+        <div className="flex flex-col items-center gap-3 py-2">
+          <div className="flex gap-3">
+            {[0, 1, 2].map(i => (
+              <div key={i} className="w-4 h-4 bg-white/60 rounded-full animate-bounce"
+                   style={{ animationDelay: `${i * 0.22}s` }} />
+            ))}
+          </div>
+          <button onClick={onLeave} className="text-white/40 hover:text-white text-base font-bold underline transition-colors">{t.leave}</button>
+        </div>
+
       </div>
-      <div className="flex gap-2 animate-pulse">
-        <div className="w-2 h-2 bg-white rounded-full" />
-        <div className="w-2 h-2 bg-white rounded-full delay-100" />
-        <div className="w-2 h-2 bg-white rounded-full delay-200" />
-      </div>
-      <button
-        onClick={onLeave}
-        className="text-white/70 hover:text-white text-sm font-semibold underline transition-all"
-      >
-        ← Leave
-      </button>
-    </div>
+    </Sky>
   );
 }
+
+// ─── Player Game ──────────────────────────────────────────────────────────────
 
 function PlayerGame({ state, roomId, myId, onLeave, disconnected }: {
-  state: RoomStateDTO;
-  roomId: string;
-  myId: string;
-  onLeave: () => void;
-  disconnected: boolean;
+  state: RoomStateDTO; roomId: string; myId: string; onLeave: () => void; disconnected: boolean;
 }) {
   const socket = getSocket();
+  const t = useT();
   const [selected, setSelected] = useState<string | null>(null);
   const [answered, setAnswered] = useState(false);
-  const [typedAnswer, setTypedAnswer] = useState('');
+  const [typed, setTyped] = useState('');
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
   const [showCountdown, setShowCountdown] = useState(false);
-  const reactionCounterRef = useRef(0);
+  const [speedBonus, setSpeedBonus] = useState(0);
+  const submitTimeRef = useRef<number | null>(null);
+  const rid = useRef(0);
   const isResult = state.status === 'ROUND_RESULT';
   const isOver = state.status === 'GAME_OVER';
   const isTyped = state.settings.inputMode === 'typed';
   const isTeams = state.settings.gameMode === 'teams';
   const q = state.currentQuestion;
   const me = state.players.find(p => p.id === myId);
-  const prevRoundRef = useRef(state.currentRound);
-  const prevStatusRef = useRef(state.status);
+  const prevRound = useRef(state.currentRound);
+  const prevStatus = useRef(state.status);
 
-  // Reset on new round + show 3-2-1 countdown
   useEffect(() => {
-    if (state.currentRound !== prevRoundRef.current || (prevStatusRef.current !== 'ROUND_ACTIVE' && state.status === 'ROUND_ACTIVE')) {
-      setSelected(null);
-      setAnswered(false);
-      setTypedAnswer('');
-      if (state.status === 'ROUND_ACTIVE') {
-        setShowCountdown(true);
-      }
-      prevRoundRef.current = state.currentRound;
+    if (state.currentRound !== prevRound.current || (prevStatus.current !== 'ROUND_ACTIVE' && state.status === 'ROUND_ACTIVE')) {
+      setSelected(null); setAnswered(false); setTyped(''); setSpeedBonus(0);
+      submitTimeRef.current = null;
+      if (state.status === 'ROUND_ACTIVE') setShowCountdown(true);
+      prevRound.current = state.currentRound;
     }
-    prevStatusRef.current = state.status;
+    prevStatus.current = state.status;
   }, [state.currentRound, state.status]);
 
-  const handleCountdownDone = useCallback(() => setShowCountdown(false), []);
+  const onCDone = useCallback(() => setShowCountdown(false), []);
 
-  // Confetti on game over
   useEffect(() => {
-    if (state.status === 'GAME_OVER') {
-      import('canvas-confetti').then(({ default: confetti }) => {
-        confetti({ particleCount: 150, spread: 100, origin: { y: 0.6 } });
-      });
-    }
+    if (state.status === 'GAME_OVER') import('canvas-confetti').then(({ default: c }) => c({ particleCount: 200, spread: 120, origin: { y: 0.6 } }));
   }, [state.status]);
 
-  // Sound: round result
   useEffect(() => {
-    if (prevStatusRef.current !== state.status) {
+    if (prevStatus.current !== state.status) {
       if (state.status === 'ROUND_RESULT') {
-        const correct = selected === state.correctAnswer;
-        if (correct) playCorrect();
-        else playRoundEnd();
-        // Audio pronunciation
-        if (state.correctAnswer) {
-          setTimeout(() => speakKorean(state.correctAnswer!), 700);
-        }
-        // Spaced repetition: record wrong answer
-        if (!correct && q && state.correctAnswer) {
-          recordWrong(q.prompt, state.correctAnswer, state.settings.category);
-        }
-      } else if (state.status === 'GAME_OVER') {
-        playGameOver();
-      }
+        if (selected === state.correctAnswer) {
+          playCorrect();
+          // Calculate speed bonus to display
+          if (submitTimeRef.current !== null && state.roundStartedAt) {
+            const elapsed = submitTimeRef.current - state.roundStartedAt;
+            const fraction = elapsed / (state.settings.timeLimit * 1000);
+            const bonus = fraction < 0.33 ? 2 : fraction < 0.66 ? 1 : 0;
+            if (bonus > 0) setSpeedBonus(bonus);
+          }
+        } else playRoundEnd();
+        if (state.correctAnswer) setTimeout(() => speakKorean(state.correctAnswer!), 700);
+        if (selected !== state.correctAnswer && q && state.correctAnswer) recordWrong(q.prompt, state.correctAnswer, state.settings.category);
+      } else if (state.status === 'GAME_OVER') playGameOver();
     }
-  }, [state.status, state.correctAnswer, selected, q, state.settings.category]);
+  }, [state.status, state.correctAnswer, selected, q, state.settings.category, state.roundStartedAt, state.settings.timeLimit]);
 
-  // Sound: timer tick when <= 3s remaining
-  const prevSecsRef = useRef<number | null>(null);
+  const prevSecs = useRef<number | null>(null);
   useEffect(() => {
     if (state.status !== 'ROUND_ACTIVE' || !state.roundExpiresAt) return;
-    const secs = Math.ceil((state.roundExpiresAt - Date.now()) / 1000);
-    if (secs <= 3 && secs > 0 && secs !== prevSecsRef.current) {
-      prevSecsRef.current = secs;
-      playTimerTick();
-    }
-    if (state.status !== 'ROUND_ACTIVE') prevSecsRef.current = null;
+    const s = Math.ceil((state.roundExpiresAt - Date.now()) / 1000);
+    if (s <= 3 && s > 0 && s !== prevSecs.current) { prevSecs.current = s; playTimerTick(); }
+    if (state.status !== 'ROUND_ACTIVE') prevSecs.current = null;
   });
 
-  // Listen for reactions
   useEffect(() => {
-    const handler = ({ playerId: pid, playerName, emoji }: { playerId: string; playerName: string; emoji: string }) => {
+    const h = ({ playerId: pid, playerName, emoji }: { playerId: string; playerName: string; emoji: string }) => {
       void pid;
-      const id = reactionCounterRef.current++;
-      const x = 10 + Math.random() * 80;
-      setReactions(prev => [...prev, { id, emoji, playerName, x }]);
-      setTimeout(() => setReactions(prev => prev.filter(r => r.id !== id)), 2200);
+      const id = rid.current++;
+      setReactions(p => [...p, { id, emoji, playerName, x: 10 + Math.random() * 80 }]);
+      setTimeout(() => setReactions(p => p.filter(r => r.id !== id)), 2200);
     };
-    socket.on('reaction:broadcast', handler);
-    return () => { socket.off('reaction:broadcast', handler); };
+    socket.on('reaction:broadcast', h);
+    return () => { socket.off('reaction:broadcast', h); };
   }, [socket]);
 
-  const submitAnswer = (answer: string) => {
+  const submit = (ans: string) => {
     if (answered || !q || state.status !== 'ROUND_ACTIVE') return;
-    setSelected(answer);
-    setAnswered(true);
-    socket.emit('answer:submit', { roomId, questionId: q.id, answer });
+    submitTimeRef.current = Date.now();
+    setSelected(ans); setAnswered(true);
+    socket.emit('answer:submit', { roomId, questionId: q.id, answer: ans });
     playTimerTick();
   };
 
-  const submitTyped = () => {
-    const ans = typedAnswer.trim();
-    if (!ans) return;
-    submitAnswer(ans);
-  };
-
-  const sendReaction = (emoji: string) => {
-    socket.emit('reaction:send', { roomId, emoji });
-  };
-
-  const optionColor = (opt: string) => {
-    if (!isResult) {
-      if (opt === selected) return 'bg-indigo-500 text-white ring-4 ring-indigo-300 scale-95';
-      if (answered) return 'bg-gray-200 text-gray-400';
-      return 'bg-white text-gray-800 hover:bg-indigo-50 active:scale-95';
-    }
-    if (opt === state.correctAnswer) return 'bg-emerald-400 text-white ring-4 ring-emerald-200';
-    if (opt === selected && opt !== state.correctAnswer) return 'bg-red-400 text-white';
-    return 'bg-gray-100 text-gray-400';
-  };
-
-  // Elimination: show eliminated screen
+  // Eliminated screen
   if (me?.eliminated && !isOver) {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-gray-700 to-gray-900 flex flex-col items-center justify-center p-6 text-white gap-5">
-        <div className="text-8xl">💀</div>
-        <p className="text-4xl font-extrabold">Eliminated!</p>
-        <p className="text-lg text-gray-300 text-center">You answered incorrectly.</p>
-        <p className="text-gray-400 text-sm text-center">Watch the rest of the game...</p>
-        <div className="bg-white/10 rounded-3xl p-4 w-full max-w-xs">
-          <p className="font-semibold text-center mb-2 text-sm">Remaining Players</p>
-          {state.players
-            .filter(p => !p.isHost && !p.eliminated)
-            .sort((a, b) => b.score - a.score)
-            .map(p => (
-              <p key={p.id} className="text-center py-1 text-sm">{p.name} — {p.score} pts</p>
+      <Sky>
+        <div className="relative z-10 flex-1 flex flex-col items-center justify-center p-6 gap-5">
+          <div className="text-[7rem] select-none">💀</div>
+          <p className="text-4xl font-black text-white kid-title">{t.eliminated_title}</p>
+          <p className="text-white/60 text-center text-base kid-label">{t.eliminated_watch}</p>
+          <div className="sky-card rounded-3xl p-4 w-full max-w-xs">
+            {state.players.filter(p => !p.isHost && !p.eliminated).sort((a, b) => b.score - a.score).map(p => (
+              <p key={p.id} className="text-center py-1 text-base text-white/70 font-black kid-label">{p.name} — {t.pts(p.score)}</p>
             ))}
+          </div>
+          <button onClick={onLeave} className="text-white/40 hover:text-white text-base font-bold underline transition-colors">{t.leave}</button>
         </div>
-        <button
-          onClick={onLeave}
-          className="text-white/70 hover:text-white text-sm font-semibold underline transition-all mt-2"
-        >
-          ← Leave
-        </button>
-      </div>
+      </Sky>
     );
   }
 
+  // Game over screen
   if (isOver) {
     const sorted = [...state.players].filter(p => !p.isHost).sort((a, b) => b.score - a.score);
     const myRank = sorted.findIndex(p => p.id === myId) + 1;
+    const MEDALS = ['🥇', '🥈', '🥉'];
+    const pct = me ? Math.round((me.score / Math.max(...sorted.map(p => p.score), 1)) * 100) : 0;
     return (
-      <div className="min-h-screen bg-gradient-to-b from-indigo-600 to-purple-700 flex flex-col items-center justify-center p-6 text-white gap-4">
-        {isTeams && state.teamScores ? (
-          <>
-            <div className="text-6xl">{
-              (me?.team === 'red' && state.teamScores.red > state.teamScores.blue) ||
-              (me?.team === 'blue' && state.teamScores.blue > state.teamScores.red) ? '🏆' : '🎮'
-            }</div>
-            <p className="text-3xl font-black">Game Over!</p>
-            <TeamScoresBanner teamScores={state.teamScores} />
-            {state.teamScores.red > state.teamScores.blue ? (
-              <p className="text-2xl font-black text-yellow-300">🔴 Red Team Wins!</p>
-            ) : state.teamScores.blue > state.teamScores.red ? (
-              <p className="text-2xl font-black text-yellow-300">🔵 Blue Team Wins!</p>
-            ) : (
-              <p className="text-2xl font-black text-yellow-300">🤝 Tie!</p>
-            )}
-          </>
-        ) : (
-          <>
-            <div className="text-6xl">{myRank === 1 ? '🏆' : myRank === 2 ? '🥈' : myRank === 3 ? '🥉' : '🎮'}</div>
-            <p className="text-3xl font-black">Game Over!</p>
-            <p className="text-xl">You finished #{myRank}</p>
-            <p className="text-4xl font-black">{me?.score ?? 0} pts</p>
-          </>
-        )}
-        <div className="bg-white/10 rounded-3xl p-4 w-full max-w-xs mt-4">
-          {sorted.map((p, i) => (
-            <div key={p.id} className={`flex justify-between py-2 px-3 rounded-xl ${p.id === myId ? 'bg-white/20' : ''}`}>
-              <span>{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`} {p.name}</span>
-              <span className="font-bold">{p.score}</span>
-            </div>
-          ))}
+      <Sky>
+        <div className="relative z-10 flex-1 flex flex-col items-center justify-center gap-5 p-6">
+          <div className="text-[7rem] leading-none pop-in select-none">{myRank <= 3 ? MEDALS[myRank - 1] : '🎮'}</div>
+          <p className="text-5xl font-black text-white kid-title">{t.game_over}</p>
+          {isTeams && state.teamScores ? (
+            <>
+              <TeamBanner teamScores={state.teamScores} />
+              <p className="text-yellow-300 text-2xl font-black kid-label">
+                {state.teamScores.red > state.teamScores.blue ? t.red_wins : state.teamScores.blue > state.teamScores.red ? t.blue_wins : t.tie}
+              </p>
+            </>
+          ) : (
+            <>
+              <Stars pct={pct} />
+              <div className="bubble-card px-10 py-5 text-center">
+                <p className="text-gray-500 text-base font-black">{t.finished_rank(myRank)}</p>
+                <p className="text-4xl font-black text-yellow-500 mt-1">{t.pts(me?.score ?? 0)}</p>
+              </div>
+            </>
+          )}
+          <div className="sky-card rounded-3xl p-3 w-full max-w-xs"><Leaderboard players={state.players} myId={myId} showTeams={isTeams} /></div>
+          <button onClick={onLeave} className="text-white/50 hover:text-white text-base font-bold underline transition-colors">{t.leave}</button>
         </div>
-        <button
-          onClick={onLeave}
-          className="text-white/70 hover:text-white text-sm font-semibold underline transition-all mt-2"
-        >
-          ← Leave
-        </button>
-      </div>
+      </Sky>
     );
   }
 
-  const promptDisplay = q ? (
-    q.promptType === 'text' ? (
-      <div className="bg-white/20 rounded-2xl px-6 py-4 max-w-sm text-center w-full">
-        <p className="text-white text-xl font-bold">{q.prompt}</p>
-      </div>
-    ) : (
-      <div className="text-[8rem] leading-none select-none">{q.prompt}</div>
-    )
-  ) : null;
-
   return (
-    <div className="min-h-screen bg-gradient-to-b from-sky-400 to-indigo-600 flex flex-col">
+    <Sky ground={false}>
       <ReactionsOverlay reactions={reactions} />
-      {showCountdown && <CountdownOverlay onDone={handleCountdownDone} />}
-      <ReconnectOverlay visible={disconnected} />
+      {showCountdown && <CountdownOverlay onDone={onCDone} />}
+      <ReconnectOverlay visible={disconnected} title={t.reconnecting} hint={t.reconnect_hint} />
 
       {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-3 text-white">
+      <div className="relative z-10 flex items-center justify-between px-4 pt-3 pb-1">
         <div className="flex items-center gap-2">
-          <div className="text-sm font-bold">{me?.name ?? ''}</div>
-          <button
-            onClick={onLeave}
-            className="text-white/60 hover:text-white text-xs font-semibold underline transition-all"
-          >
-            ← Leave
-          </button>
+          <span className="sky-card rounded-full px-4 py-2 text-white font-black text-base kid-label flex items-center gap-1.5">
+            {isTeams && me?.team && (
+              <span className={`w-3 h-3 rounded-full inline-block ${me.team === 'red' ? 'bg-red-400' : 'bg-blue-400'}`} />
+            )}
+            {me?.name}
+          </span>
+          <button onClick={onLeave} className="text-white/30 hover:text-white text-sm font-bold underline transition-colors">{t.leave}</button>
         </div>
-        <div className="text-sm font-bold">Round {state.currentRound}/{state.settings.totalRounds}</div>
-        <div className="text-sm font-bold flex items-center gap-1">
-          {me && me.streak >= 2 && <span className="text-orange-300">🔥{me.streak}</span>}
-          ⭐ {me?.score ?? 0} pts
+        <span className="sky-card rounded-full px-4 py-2 text-white/80 font-black text-base kid-label">{t.round_of(state.currentRound, state.settings.totalRounds)}</span>
+        <div className="bg-gradient-to-b from-amber-300 to-yellow-500 rounded-full px-4 py-2 font-black text-slate-900 text-base gummy-btn flex items-center gap-1">
+          {me?.streak && me.streak >= 2 && <span>🔥{me.streak} </span>}⭐ {t.pts(me?.score ?? 0)}
         </div>
       </div>
 
-      {/* Team scores */}
-      {isTeams && state.teamScores && <TeamScoresBanner teamScores={state.teamScores} />}
-
-      {/* Timer */}
+      {isTeams && state.teamScores && <div className="relative z-10"><TeamBanner teamScores={state.teamScores} /></div>}
       {state.status === 'ROUND_ACTIVE' && state.roundExpiresAt && (
-        <div className="px-4">
-          <TimerBar expiresAt={state.roundExpiresAt} timeLimit={state.settings.timeLimit} />
-        </div>
+        <div className="relative z-10"><TimerBar expiresAt={state.roundExpiresAt} timeLimit={state.settings.timeLimit} /></div>
       )}
 
-      {/* Question prompt */}
-      <div className="flex-1 flex flex-col items-center justify-center px-4 py-2 gap-4">
+      {/* Question area */}
+      <div className="relative z-10 flex flex-col items-center justify-center px-4 py-2 gap-3" style={{ flex: '0 0 auto' }}>
         {q && (
           <>
-            <p className="text-white/80 text-sm font-semibold">{q.categoryHint}</p>
-            {promptDisplay}
-
-            {/* Result banner + correct answer callout */}
+            <span className="sky-card rounded-full px-5 py-2 text-white/80 text-base font-black kid-label">{q.categoryHint}</span>
+            {q.promptType === 'text'
+              ? <div className="bubble-card px-6 py-5 w-full max-w-sm text-center"><p className="text-slate-800 text-4xl font-black">{q.prompt}</p></div>
+              : <div className="text-[9rem] leading-none select-none drop-shadow-2xl">{q.prompt}</div>
+            }
             {isResult && (
-              <>
-                <div className={`text-center py-3 px-6 rounded-2xl font-black text-xl ${
-                  selected === state.correctAnswer ? 'bg-emerald-400 text-white' : 'bg-white/20 text-white'
-                }`}>
-                  {state.roundWinner?.id === myId
-                    ? '🏆 You got it!'
-                    : state.roundWinner
-                      ? `${state.roundWinner.name} got it!`
-                      : "⏰ Time's up!"}
+              <div className="text-center pop-in">
+                <div className={`inline-block px-5 py-3 rounded-2xl font-black text-xl kid-label gummy-btn ${selected === state.correctAnswer ? 'bg-gradient-to-b from-emerald-400 to-green-600 text-white' : 'bg-gradient-to-b from-rose-400 to-red-600 text-white'}`}>
+                  {state.roundWinner?.id === myId ? t.you_got_it : state.roundWinner ? t.player_got_it(state.roundWinner.name) : t.times_up}
                 </div>
-                {state.correctAnswer && (
-                  <div className="text-center">
-                    <p className="text-white/70 text-xs font-semibold uppercase tracking-wide">Correct Answer</p>
-                    <p className="text-white text-4xl font-black">{state.correctAnswer}</p>
-                    {q.hint && <p className="text-white/60 text-sm mt-1">{q.hint}</p>}
-                    <button
-                      onClick={() => speakKorean(state.correctAnswer ?? '')}
-                      className="mt-2 text-white/70 hover:text-white text-sm font-semibold transition-all"
-                    >
-                      🔊 Pronounce
-                    </button>
+                {speedBonus > 0 && (
+                  <div className="mt-2 pop-in inline-flex items-center gap-1 bg-yellow-400 text-slate-900 font-black text-base px-4 py-1.5 rounded-full gummy-btn">
+                    ⚡ +{speedBonus} Speed Bonus!
                   </div>
                 )}
-              </>
-            )}
-
-            {/* Answer input */}
-            {isTyped ? (
-              <div className="w-full max-w-sm flex flex-col gap-2">
-                <input
-                  type="text"
-                  value={typedAnswer}
-                  onChange={e => setTypedAnswer(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') submitTyped(); }}
-                  disabled={answered || isResult}
-                  placeholder="Type your answer..."
-                  className="w-full border-2 border-white/40 bg-white/20 text-white placeholder-white/50 rounded-2xl px-4 py-3 text-xl font-bold text-center focus:outline-none focus:border-white disabled:opacity-50"
-                />
-                {!answered && !isResult && (
-                  <button
-                    onClick={submitTyped}
-                    disabled={!typedAnswer.trim()}
-                    className="bg-white text-indigo-700 font-extrabold py-3 rounded-2xl disabled:opacity-50 transition-all"
-                  >
-                    Submit
-                  </button>
+                {state.correctAnswer && (
+                  <div className="mt-3">
+                    <p className="text-white/60 text-sm font-black uppercase tracking-widest">{t.correct_answer}</p>
+                    <p className="text-white text-5xl font-black kid-title mt-1">{state.correctAnswer}</p>
+                    {q.hint && <p className="text-white/50 text-base mt-1">{q.hint}</p>}
+                    <button onClick={() => speakKorean(state.correctAnswer ?? '')} className="mt-1 text-white/50 hover:text-white text-base font-black transition-colors">{t.pronounce}</button>
+                  </div>
                 )}
               </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-3 w-full max-w-sm mt-2">
-                {q.options.map(opt => (
-                  <button
-                    key={opt}
-                    onClick={() => submitAnswer(opt)}
-                    disabled={answered || isResult}
-                    className={`py-5 px-2 rounded-2xl font-black text-xl shadow-lg transition-all ${optionColor(opt)}`}
-                  >
-                    {opt}
-                  </button>
-                ))}
-              </div>
             )}
-
-            {answered && !isResult && (
-              <p className="text-white/80 text-sm animate-pulse mt-2">Waiting for others...</p>
-            )}
-
-            {isResult && (
-              <p className="text-white/70 text-sm animate-pulse mt-1">
-                Waiting for host...
-                {state.autoAdvanceAt && <AutoAdvanceCountdown autoAdvanceAt={state.autoAdvanceAt} />}
-              </p>
-            )}
-
-            {/* Reaction bar */}
-            <ReactionBar onReact={sendReaction} />
           </>
         )}
       </div>
-    </div>
+
+      {/* Answer buttons — BIG 2×2 grid */}
+      {q && (
+        isTyped ? (
+          <div className="relative z-10 px-4 pb-3 flex flex-col gap-3 flex-1 justify-end">
+            <input type="text" value={typed} onChange={e => setTyped(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && typed.trim()) submit(typed.trim()); }}
+              disabled={answered || isResult} placeholder={t.type_placeholder}
+              className="w-full bg-amber-50 border-4 border-amber-200 rounded-2xl px-4 py-5 text-2xl font-black text-amber-900 text-center placeholder-amber-200 focus:outline-none disabled:opacity-50" />
+            {!answered && !isResult && (
+              <button onClick={() => typed.trim() && submit(typed.trim())} disabled={!typed.trim()}
+                className="bg-gradient-to-b from-emerald-400 to-green-600 text-white font-black text-2xl py-5 rounded-2xl gummy-btn disabled:opacity-40">{t.submit}</button>
+            )}
+          </div>
+        ) : (
+          <div className="relative z-10 grid grid-cols-2 gap-3 px-4 pb-2 flex-1 content-end">
+            {q.options.map((opt, idx) => (
+              <button key={opt} onClick={() => submit(opt)} disabled={answered || isResult}
+                className={`py-10 rounded-[2rem] font-black text-2xl text-white gummy-btn kid-label transition-all ${answerClass(idx, opt, selected, state.correctAnswer, isResult, answered)}`}>
+                {opt}
+              </button>
+            ))}
+          </div>
+        )
+      )}
+
+      {answered && !isResult && (
+        <p className="relative z-10 text-white/60 text-base font-black text-center animate-pulse py-2 kid-label">{t.waiting_others}</p>
+      )}
+      {isResult && (
+        <p className="relative z-10 text-white/60 text-base font-black text-center py-1 kid-label">
+          {t.waiting_host}{state.autoAdvanceAt && <AutoAdv autoAdvanceAt={state.autoAdvanceAt} label={t.auto_in} />}
+        </p>
+      )}
+
+      {/* Reaction buttons */}
+      {q && (
+        <div className="relative z-10 flex gap-2 justify-center py-2 pb-3">
+          {['👍','🎉','😱','❤️','😂','🔥'].map(e => (
+            <button key={e} onClick={() => socket.emit('reaction:send', { roomId, emoji: e })}
+              className="text-2xl bg-white/20 hover:bg-white/30 rounded-full w-12 h-12 flex items-center justify-center active:scale-90 transition-all gummy-btn">{e}</button>
+          ))}
+        </div>
+      )}
+    </Sky>
   );
 }
 
-// ─── Root page ────────────────────────────────────────────────────────────────
+// ─── Root ─────────────────────────────────────────────────────────────────────
 
 export default function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const router = useRouter();
+  const t = useT();
   const { myId, myName, setMyId, setRoomState, roomState } = useGameStore();
   const [state, setState] = useState<RoomStateDTO | null>(roomState);
   const [disconnected, setDisconnected] = useState(false);
 
+  useRoomSetup(roomId, () => router.push('/'));
+
+  // Effect 2: socket event listeners — safe to re-register on re-render
   useEffect(() => {
     const socket = getSocket();
-    if (!socket.connected) socket.connect();
-
-    if (socket.id && !myId) setMyId(socket.id);
-
-    const onState = (s: RoomStateDTO) => {
-      setState(s);
-      setRoomState(s);
-    };
-    const onDisconnect = () => setDisconnected(true);
-    const onConnect = () => setDisconnected(false);
-
-    socket.on('room:state', onState);
-    socket.on('disconnect', onDisconnect);
-    socket.on('connect', onConnect);
-    socket.on('error:event', ({ message }) => {
-      toast.error(message);
-      router.push('/');
-    });
-
-    const token = localStorage.getItem(`rct:${roomId}`);
-    if (token) {
-      const doRejoin = () => {
-        socket.emit('room:rejoin', { roomId, token }, (res) => {
-          if ('error' in res) {
-            localStorage.removeItem(`rct:${roomId}`);
-            router.push('/');
-          }
-        });
-      };
-      if (socket.connected) doRejoin();
-      else socket.once('connect', doRejoin);
-    } else {
-      const doSync = () => socket.emit('room:sync', { roomId });
-      if (socket.connected) doSync();
-      else socket.once('connect', doSync);
-    }
-
+    const onS = (s: RoomStateDTO) => { setState(s); setRoomState(s); };
+    const onD = () => setDisconnected(true);
+    const onC = () => { setDisconnected(false); setMyId(socket.id!); };
+    const onErr = ({ message }: { message: string }) => { toast.error(message); router.push('/'); };
+    socket.on('room:state', onS);
+    socket.on('disconnect', onD);
+    socket.on('connect', onC);
+    socket.on('error:event', onErr);
     return () => {
-      socket.off('room:state', onState);
-      socket.off('disconnect', onDisconnect);
-      socket.off('connect', onConnect);
-      socket.off('connect');
+      socket.off('room:state', onS);
+      socket.off('disconnect', onD);
+      socket.off('connect', onC);
+      socket.off('error:event', onErr);
     };
-  }, [myId, setMyId, setRoomState, router, roomId]);
+  }, [setMyId, setRoomState, router]);
 
-  useEffect(() => {
-    const socket = getSocket();
-    const handleConnect = () => setMyId(socket.id!);
-    socket.on('connect', handleConnect);
-    return () => { socket.off('connect', handleConnect); };
-  }, [setMyId]);
-
-  const leaveRoom = () => {
-    getSocket().emit('room:leave', { roomId });
-    localStorage.removeItem(`rct:${roomId}`);
-    router.push('/');
-  };
+  const leave = () => { getSocket().emit('room:leave', { roomId }); localStorage.removeItem(`rct:${roomId}`); router.push('/'); };
 
   if (!state) {
     return (
-      <div className="min-h-screen bg-indigo-600 flex items-center justify-center text-white">
-        <div className="text-center">
-          <div className="text-6xl animate-spin mb-4">⏳</div>
-          <p className="text-xl font-bold">Connecting...</p>
+      <Sky>
+        <div className="relative z-10 flex-1 flex flex-col items-center justify-center gap-5">
+          <div className="text-[7rem] animate-spin select-none">⏳</div>
+          <p className="text-3xl font-black text-white kid-title">{t.connecting_msg}</p>
           {!myName && (
-            <p className="text-sm text-indigo-200 mt-2">
-              If you refreshed the page, <button className="underline" onClick={() => router.push('/')}>go back home</button>
-            </p>
+            <button className="text-white/50 hover:text-white text-base underline transition-colors mt-2" onClick={() => router.push('/')}>
+              {t.go_back_home}
+            </button>
           )}
         </div>
-      </div>
+      </Sky>
     );
   }
 
-  const effectiveId = myId || getSocket().id || '';
-  const amHost = state.hostId === effectiveId;
-
-  if (state.status === 'LOBBY') {
-    return amHost
-      ? <HostLobby state={state} roomId={roomId} onLeave={leaveRoom} />
-      : <PlayerLobby state={state} myId={effectiveId} onLeave={leaveRoom} />;
-  }
-
-  return amHost
-    ? <HostGame state={state} roomId={roomId} onLeave={leaveRoom} />
-    : <PlayerGame state={state} roomId={roomId} myId={effectiveId} onLeave={leaveRoom} disconnected={disconnected} />;
+  const eid = myId || getSocket().id || '';
+  const amHost = state.hostId === eid;
+  if (state.status === 'LOBBY') return amHost ? <HostLobby state={state} roomId={roomId} onLeave={leave} /> : <PlayerLobby state={state} roomId={roomId} myId={eid} onLeave={leave} />;
+  return amHost ? <HostGame state={state} roomId={roomId} onLeave={leave} /> : <PlayerGame state={state} roomId={roomId} myId={eid} onLeave={leave} disconnected={disconnected} />;
 }

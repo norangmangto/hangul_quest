@@ -48,9 +48,14 @@ export class RoomManager {
   private rooms = new Map<string, Room>();
   private codeToId = new Map<string, string>();
   private onStateChange: (roomId: string, state: RoomStateDTO) => void;
+  private onRoomClose: (roomId: string) => void;
 
-  constructor(onStateChange: (roomId: string, state: RoomStateDTO) => void) {
+  constructor(
+    onStateChange: (roomId: string, state: RoomStateDTO) => void,
+    onRoomClose: (roomId: string) => void = () => {},
+  ) {
     this.onStateChange = onStateChange;
+    this.onRoomClose = onRoomClose;
   }
 
   createRoom(hostId: string, hostName: string, settings?: Partial<GameSettings>): Room {
@@ -115,6 +120,19 @@ export class RoomManager {
     });
     this.broadcast(room);
     return { ok: true, roomId };
+  }
+
+  renamePlayer(roomId: string, playerId: string, newName: string): { ok: true } | { ok: false; error: string } {
+    const room = this.rooms.get(roomId);
+    if (!room) return { ok: false, error: 'Room not found' };
+    const player = room.players.get(playerId);
+    if (!player) return { ok: false, error: 'Player not found' };
+    if (room.status !== 'LOBBY') return { ok: false, error: 'Cannot rename during game' };
+    const trimmed = newName.trim().slice(0, 20);
+    if (!trimmed) return { ok: false, error: 'Name required' };
+    player.name = trimmed;
+    this.broadcast(room);
+    return { ok: true };
   }
 
   reconnect(roomId: string, playerId: string): boolean {
@@ -372,7 +390,16 @@ export class RoomManager {
   updateSettings(roomId: string, requesterId: string, settings: Partial<GameSettings>): void {
     const room = this.rooms.get(roomId);
     if (!room || room.hostId !== requesterId || room.status !== 'LOBBY') return;
-    room.settings = { ...room.settings, ...settings };
+    const VALID_CATEGORIES = new Set(['KOREAN_WORDS','HANGUL_LETTERS','KOREAN_VERBS','KOREAN_TO_ENGLISH','KOREAN_NUMBERS','KOREAN_SENTENCES']);
+    const VALID_MODES = new Set(['standard','teams','elimination']);
+    const validated: Partial<GameSettings> = {};
+    if (settings.category !== undefined && VALID_CATEGORIES.has(settings.category)) validated.category = settings.category;
+    if (settings.totalRounds !== undefined) validated.totalRounds = Math.max(1, Math.min(30, settings.totalRounds));
+    if (settings.timeLimit !== undefined) validated.timeLimit = Math.max(5, Math.min(60, settings.timeLimit));
+    if (settings.autoAdvanceDelay !== undefined) validated.autoAdvanceDelay = Math.max(0, Math.min(30, settings.autoAdvanceDelay));
+    if (settings.inputMode !== undefined && (settings.inputMode === 'buttons' || settings.inputMode === 'typed')) validated.inputMode = settings.inputMode;
+    if (settings.gameMode !== undefined && VALID_MODES.has(settings.gameMode)) validated.gameMode = settings.gameMode as GameSettings['gameMode'];
+    room.settings = { ...room.settings, ...validated };
     this.broadcast(room);
   }
 
@@ -392,6 +419,7 @@ export class RoomManager {
     if (room.autoAdvanceTimer) clearTimeout(room.autoAdvanceTimer);
     this.codeToId.delete(room.roomCode);
     this.rooms.delete(roomId);
+    this.onRoomClose(roomId);
   }
 
   private broadcast(room: Room): void {

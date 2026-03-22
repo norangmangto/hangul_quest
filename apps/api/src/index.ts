@@ -23,7 +23,13 @@ function broadcastState(roomId: string, state: RoomStateDTO): void {
   io.to(roomId).emit('room:state', state);
 }
 
-const rooms = new RoomManager(broadcastState);
+function cleanTokensForRoom(roomId: string): void {
+  for (const [token, entry] of tokenToPlayer.entries()) {
+    if (entry.roomId === roomId) tokenToPlayer.delete(token);
+  }
+}
+
+const rooms = new RoomManager(broadcastState, cleanTokensForRoom);
 
 // Map socket.id → { roomId, playerId } for fast lookup on disconnect
 const socketMeta = new Map<string, { roomId: string; playerId: string }>();
@@ -86,7 +92,11 @@ io.on('connection', (socket) => {
     playerToSocket.set(playerId, socket.id);
     socket.join(roomId);
     rooms.reconnect(roomId, playerId);
-    ack({ ok: true });
+    // Rotate token: delete old, issue fresh one
+    tokenToPlayer.delete(token);
+    const newToken = randomBytes(16).toString('hex');
+    tokenToPlayer.set(newToken, { roomId, playerId });
+    ack({ ok: true, reconnectToken: newToken });
   });
 
   socket.on('room:leave', ({ roomId }) => {
@@ -132,6 +142,12 @@ io.on('connection', (socket) => {
 
   socket.on('room:assign-team', ({ roomId, targetId, team }) => {
     rooms.assignTeam(roomId, playerId, targetId, team);
+  });
+
+  socket.on('player:rename', ({ roomId, newName }, ack) => {
+    const result = rooms.renamePlayer(roomId, playerId, newName);
+    if (!result.ok) return ack({ error: result.error });
+    ack({ ok: true });
   });
 
   socket.on('reaction:send', ({ roomId, emoji }) => {
